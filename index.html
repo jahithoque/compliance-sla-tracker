@@ -605,7 +605,8 @@ function normNetwork(v) {
 const isBlankDate = v => v === '' || v == null || /^(-+|n\/?a|none|never|null|unknown)$/i.test(String(v).trim());
 
 function buildRows(aoa, hr, map) {
-  const get = (r, f) => map[f] === undefined ? '' : r[map[f]];
+  // Raw exports can contain control characters that are illegal in .xlsx XML; drop them on the way in
+  const get = (r, f) => { const v = map[f] === undefined ? '' : r[map[f]]; return typeof v === 'string' ? v.replace(XML_BAD, '') : v; };
   const str = (r, f) => { const v = get(r, f); return String(v instanceof Date ? ymd(v) : v ?? '').trim(); };
   const rows = [];
   for (let i = hr + 1; i < aoa.length; i++) {
@@ -1218,7 +1219,7 @@ function addDataSheet(wb, name, cols, rows, { tabColor } = {}) {
   });
   ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: cols.length } };
   ws.pageSetup.printTitlesRow = '1:1';
-  (wb._dataSheets ||= []).push({ name, cols, rows });
+  (wb._dataSheets ||= []).push({ name, cols, rows, wsId: ws.id });
   return ws;
 }
 const addFindingsSheet = (wb, name, rows, tabColor) => addDataSheet(wb, name, FINDING_COLS, rows, { tabColor });
@@ -1303,35 +1304,75 @@ function cellXml(ref, v, s, isDate) {
 }
 
 const tick = () => new Promise(r => setTimeout(r, 0)); // let the page repaint between chunks
+const FALLBACK_MAX_ROWS = 60000; // the standard (in-memory) writer is safe up to roughly this many data rows
 async function writeWorkbook(wb, onProgress = () => {}) {
-  const base = new Uint8Array(await wb.xlsx.writeBuffer());
   const sheets = wb._dataSheets || [];
-  if (!sheets.length) return [base];
+  if (sheets.length) {
+    try { return await streamWorkbook(wb, sheets, onProgress); }
+    catch (e) {
+      console.error('Streaming writer failed; falling back to the standard writer.', e);
+      const total = sheets.reduce((s, d) => s + d.rows.length, 0);
+      if (total > FALLBACK_MAX_ROWS) throw new Error(`writing data sheets (${total.toLocaleString()} rows): ${e.message || e}`);
+      fillDataSheets(wb, sheets);
+      onProgress(1);
+    }
+  }
+  return [new Uint8Array(await wb.xlsx.writeBuffer())];
+}
+// Standard path: put the rows into the ExcelJS sheets directly (fine for moderate sizes)
+function fillDataSheets(wb, sheets) {
+  for (const d of sheets) {
+    const ws = wb.getWorksheet(d.name);
+    if (!d.rows.length) { ws.spliceRows(2, 1); continue; }
+    d.rows.forEach((r, j) => {
+      const row = ws.getRow(j + 2);
+      d.cols.forEach((c, k) => {
+        let v = c.value(r);
+        if (c.type === 'date' && typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)) v = xlDate(v);
+        const cell = row.getCell(k + 1);
+        cell.value = typeof v === 'string' ? v.replace(XML_BAD, '').slice(0, 32767) : v ?? null;
+        if (c.type === 'date') cell.numFmt = 'dd-mmm-yyyy';
+        if (c.type === 'wrap') cell.alignment = { wrapText: true, vertical: 'top' };
+      });
+    });
+  }
+}
+// Finds a worksheet's XML part: workbook.xml → relationships, else ExcelJS's sheet<id>.xml naming
+function sheetPath(d, wbXml, relsXml, byName) {
+  const esc = xmlEsc(d.name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const tag = wbXml.match(new RegExp(`<sheet\\b[^>]*\\bname="${esc}"[^>]*>`));
+  const rid = tag && tag[0].match(/\br:id="([^"]+)"/);
+  const rel = rid && relsXml.match(new RegExp(`<Relationship\\b[^>]*\\bId="${rid[1]}"[^>]*>`));
+  const target = rel && rel[0].match(/\bTarget="([^"]+)"/);
+  const viaRels = target && (target[1].startsWith('/') ? target[1].slice(1) : 'xl/' + target[1].replace(/^\.\//, ''));
+  for (const p of [viaRels, `xl/worksheets/sheet${d.wsId}.xml`]) if (p && byName.has(p)) return p;
+  throw new Error(`could not locate the "${d.name}" sheet in the workbook`);
+}
+async function streamWorkbook(wb, sheets, onProgress) {
+  const base = new Uint8Array(await wb.xlsx.writeBuffer());
   const entries = readZip(base), byName = new Map(entries.map(e => [e.name, e]));
   const wbXml = await entryText(byName.get('xl/workbook.xml'));
-  const relsXml = await entryText(byName.get('xl/_rels/workbook.xml.rels'));
+  const relsXml = byName.has('xl/_rels/workbook.xml.rels') ? await entryText(byName.get('xl/_rels/workbook.xml.rels')) : '';
   const total = sheets.reduce((s, d) => s + d.rows.length, 0) || 1;
   let done = 0;
   for (const d of sheets) {
-    // Locate the sheet's XML part via workbook.xml → relationships
-    const tag = wbXml.match(new RegExp(`<sheet [^>]*name="${xmlEsc(d.name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"[^>]*>`))[0];
-    const rid = tag.match(/r:id="([^"]+)"/)[1];
-    const target = relsXml.match(new RegExp(`<Relationship [^>]*Id="${rid}"[^>]*>`))[0].match(/Target="([^"]+)"/)[1];
-    const path = target.startsWith('/') ? target.slice(1) : 'xl/' + target;
-    const entry = byName.get(path), xml = await entryText(entry);
-    const open = xml.indexOf('<sheetData>'), close = xml.indexOf('</sheetData>');
-    const body = xml.slice(open + 11, close);
-    const header = body.match(/<row r="1"[\s\S]*?<\/row>/)[0];
-    const tplRow = (body.match(/<row r="2"[\s\S]*?<\/row>/) || [''])[0];
-    const styles = d.cols.map((_, i) => { const m = tplRow.match(new RegExp(`<c r="${XLSX.utils.encode_col(i)}2"([^>]*?)/?>`)); return m && (m[1].match(/ s="(\d+)"/) || [])[1]; });
+    const entry = byName.get(sheetPath(d, wbXml, relsXml, byName)), xml = await entryText(entry);
+    // Split the sheet XML around <sheetData>; everything outside it (columns, filters, formats) is kept as ExcelJS wrote it
+    const m = xml.match(/<sheetData\s*\/>|<sheetData>([\s\S]*?)<\/sheetData>/);
+    if (!m) throw new Error(`unexpected layout in the "${d.name}" sheet`);
+    const body = m[1] || '', before = xml.slice(0, m.index), after = xml.slice(m.index + m[0].length);
     const letters = d.cols.map((_, i) => XLSX.utils.encode_col(i));
+    const styleOf = (row, i) => { const c = body.match(new RegExp(`<c r="${letters[i]}${row}"([^>]*?)/?>`)); return c && (c[1].match(/ s="(\d+)"/) || [])[1]; };
+    const styles = d.cols.map((_, i) => styleOf(2, i));
+    const headerRow = (body.match(/<row r="1"[\s\S]*?<\/row>/) || [])[0] ||
+      `<row r="1">${d.cols.map((c, i) => cellXml(letters[i] + 1, c.header, styleOf(1, i))).join('')}</row>`;
     const dim = `A1:${letters[letters.length - 1]}${d.rows.length + 1}`;
-    const head = xml.slice(0, open + 11).replace(/<dimension ref="[^"]*"\/>/, `<dimension ref="${dim}"/>`);
+    const head = before.replace(/<dimension ref="[^"]*"\s*\/>/, `<dimension ref="${dim}"/>`) + '<sheetData>';
 
     const enc = new TextEncoder(), sink = byteSink('deflate');
     let crc = 0, usize = 0;
     const put = async str => { const b = enc.encode(str); crc = crc32(b, crc); usize += b.length; await sink.write(b); };
-    await put(head + header);
+    await put(head + headerRow);
     const CHUNK = 2000;
     for (let i = 0; i < d.rows.length; i += CHUNK) {
       const parts = [];
@@ -1346,7 +1387,7 @@ async function writeWorkbook(wb, onProgress = () => {}) {
       onProgress(done / total);
       await tick();
     }
-    await put(xml.slice(close));
+    await put('</sheetData>' + after);
     const { parts, size } = await sink.finish();
     Object.assign(entry, { method: sink.method, crc, csize: size, usize, parts });
   }
@@ -1363,7 +1404,7 @@ function addTable(ws, r, title, headers, data, { pctCols = [], statusCol, note }
   data.forEach((vals, i) => {
     const row = ws.getRow(r + 1 + i);
     vals.forEach((v, j) => {
-      const c = row.getCell(j + 1); c.value = v ?? null; c.border = BOX;
+      const c = row.getCell(j + 1); c.value = typeof v === 'string' ? v.replace(XML_BAD, '') : v ?? null; c.border = BOX;
       c.alignment = { vertical: 'top', wrapText: typeof v === 'string' && v.length > 30 };
       if (i % 2) c.fill = fill(XL.band);
       if (pctCols.includes(j)) c.numFmt = '0.0%';
@@ -1547,28 +1588,42 @@ function trendChart({ title, subtitle, snaps, w, h }) {
   return toImg(c, w, h);
 }
 
+// Keep the first n rows and fold the rest into one "Other" bar (a 1,000-bar chart is unreadable and can exceed canvas limits)
+function capRows(rows, n, otherLabel) {
+  if (rows.length <= n) return rows;
+  const rest = rows.slice(n), other = { label: `${otherLabel} (${rest.length})` };
+  for (const k of BAR_KEYS) other[k] = rest.reduce((sum, r) => sum + (r[k] || 0), 0);
+  return rows.slice(0, n).concat(other);
+}
+// A chart that fails to draw is skipped rather than failing the whole report
+function safeChart(name, draw) {
+  try { const img = draw(); return img && /^data:image\/png;base64,./.test(img.url) ? img : null; }
+  catch (e) { console.warn(`Chart "${name}" skipped:`, e); return null; }
+}
+
 function reportCharts(agg) {
   const s = agg.status, openKeys = ['bad', 'soon', 'within', 'accepted'];
   const half = 590, full = 1190;
   return {
-    status: donutChart({ title: 'Compliance status', subtitle: `${s.total.toLocaleString()} findings across ${agg.assets} assets`,
+    status: safeChart('status', () => donutChart({ title: 'Compliance status', subtitle: `${s.total.toLocaleString()} findings across ${agg.assets} assets`,
       w: half, h: 330, center: s.total ? Math.round(s.ok / s.total * 100) + '%' : '—', centerSub: 'compliant',
-      parts: BAR_KEYS.map(k => ({ label: STATUS[k].label, value: s[k], color: RC[k] })) }),
-    netSev: hbarChart({ title: 'Open issues by network & severity', subtitle: 'Label shows the SLA applied',
+      parts: BAR_KEYS.map(k => ({ label: STATUS[k].label, value: s[k], color: RC[k] })) })),
+    netSev: safeChart('network & severity', () => hbarChart({ title: 'Open issues by network & severity', subtitle: 'Label shows the SLA applied',
       w: half, labelW: 270, keys: openKeys,
-      rows: agg.netSev.map(g => ({ ...g, label: `${netLabel(g.network)} · ${GROUP_LABEL[g.grp]} (${g.rule.days == null ? 'no SLA' : g.rule.days + 'd'})` })) }),
-    topIssues: hbarChart({ title: 'Top 10 issues', subtitle: 'Settings with the most open findings',
+      rows: capRows(agg.netSev.filter(g => g.open).sort((a, b) => b.open - a.open)
+        .map(g => ({ ...g, label: `${netLabel(g.network)} · ${GROUP_LABEL[g.grp]} (${g.rule.days == null ? 'no SLA' : g.rule.days + 'd'})` })), 24, 'Other network groups') })),
+    topIssues: safeChart('top issues', () => hbarChart({ title: 'Top 10 issues', subtitle: 'Settings with the most open findings',
       w: full, labelW: 470, keys: openKeys,
-      rows: agg.topIssues.map(g => ({ ...g, label: `${g.setting}  [${g.category}]` })) }),
-    category: hbarChart({ title: 'Total issues by test category', subtitle: 'Open findings per category, by SLA status',
-      w: full, labelW: 280, keys: openKeys, rowH: agg.categories.length > 20 ? 22 : 30,
-      rows: agg.categories.filter(g => g.open).map(g => ({ ...g, label: g.name })) }),
-    aging: columnChart({ title: 'Aging of open issues', subtitle: 'Days since last compliant',
-      w: half, h: 340, cats: agg.aging, colors: ['#c6d4ea', '#9fb6dd', '#7898cf', '#517ac1', '#2e5aa8', '#1d3f7c'] }),
-    topAssets: hbarChart({ title: 'Top 10 assets', subtitle: 'Assets with the most open findings',
-      w: half, labelW: 170, keys: openKeys, rows: agg.topAssets.map(g => ({ ...g, label: g.asset })) }),
-    trend: state.snapshots.length >= 2 ? trendChart({ title: 'Trend', subtitle: 'Open issues by SLA status and compliance rate per snapshot',
-      w: full, h: 360, snaps: state.snapshots.slice(-18) }) : null,
+      rows: agg.topIssues.map(g => ({ ...g, label: `${g.setting}  [${g.category}]` })) })),
+    category: safeChart('category', () => hbarChart({ title: 'Total issues by test category', subtitle: 'Open findings per category, by SLA status',
+      w: full, labelW: 280, keys: openKeys, rowH: 26,
+      rows: capRows(agg.categories.filter(g => g.open).map(g => ({ ...g, label: g.name })), 30, 'Other categories') })),
+    aging: safeChart('aging', () => columnChart({ title: 'Aging of open issues', subtitle: 'Days since last compliant',
+      w: half, h: 340, cats: agg.aging, colors: ['#c6d4ea', '#9fb6dd', '#7898cf', '#517ac1', '#2e5aa8', '#1d3f7c'] })),
+    topAssets: safeChart('top assets', () => hbarChart({ title: 'Top 10 assets', subtitle: 'Assets with the most open findings',
+      w: half, labelW: 170, keys: openKeys, rows: agg.topAssets.map(g => ({ ...g, label: g.asset })) })),
+    trend: state.snapshots.length >= 2 ? safeChart('trend', () => trendChart({ title: 'Trend', subtitle: 'Open issues by SLA status and compliance rate per snapshot',
+      w: full, h: 360, snaps: state.snapshots.filter(x => x && x.asOf).slice(-18) })) : null,
   };
 }
 
@@ -1582,7 +1637,7 @@ function addDashboardSheet(wb, all, agg, title) {
   Object.assign(ws.getCell('B1'), { value: title, font: { bold: true, size: 20, color: { argb: XL.text } } });
   ws.getRow(1).height = 32;
   ws.mergeCells('B2:Q2');
-  Object.assign(ws.getCell('B2'), { value: `As of ${fmtDate(todayStr())}  ·  Source: ${state.fileName}  ·  ${c.total.toLocaleString()} findings across ${agg.assets} assets` +
+  Object.assign(ws.getCell('B2'), { value: `As of ${fmtDate(todayStr())}  ·  Source: ${String(state.fileName || '').replace(XML_BAD, '')}  ·  ${c.total.toLocaleString()} findings across ${agg.assets} assets` +
     (agg.excluded ? `  ·  ${agg.excluded.toLocaleString()} empty record(s) excluded (severity, last scan and last compliant all "-")` : ''),
     font: { size: 10, color: { argb: XL.muted } } });
   ws.mergeCells('B3:Q3');
@@ -1624,17 +1679,23 @@ function addDashboardSheet(wb, all, agg, title) {
     ws.addImage(id, { tl: { col, row: row - 1 }, ext: { width: img.w, height: img.h } });
   };
   const block = (imgs) => {
+    imgs = imgs.filter(Boolean);
+    if (!imgs.length) return;
     const h = Math.max(...imgs.map(i => i.h)), rows = Math.ceil(h / ROW_PX) + 1;
     if (pageUsed + rows * ROW_PX > PAGE_PX && pageUsed > 0) { ws.getRow(row - 1).addPageBreak(); pageUsed = 0; }
     imgs.forEach((img, i) => place(img, 1 + i * 8)); // second chart starts 8 columns (≈600px) to the right
     row += rows; pageUsed += rows * ROW_PX;
   };
   block([ch.status, ch.netSev]);
-  if (ch.trend) block([ch.trend]);
+  block([ch.trend]);
   block([ch.topIssues]);
   block([ch.category]);
   block([ch.aging, ch.topAssets]);
-  ws.pageSetup.printArea = `A1:Q${row}`;
+  const skipped = Object.entries(ch).filter(([k, v]) => !v && !(k === 'trend' && state.snapshots.length < 2)).map(([k]) => ({ status: 'Compliance status', netSev: 'Network & severity', trend: 'Trend', topIssues: 'Top 10 issues',
+      category: 'Issues by test category', aging: 'Aging', topAssets: 'Top 10 assets' }[k] || k));
+  if (skipped.length) Object.assign(ws.getCell(row + 1, 2), { value: `Note: chart(s) could not be drawn in this browser: ${skipped.join(', ')}. The Summary sheet has the same figures.`,
+    font: { italic: true, size: 9, color: { argb: XL.muted } } });
+  ws.pageSetup.printArea = `A1:Q${row + 1}`;
 }
 
 function addSummarySheet(wb, all, agg, title) {
@@ -1728,18 +1789,23 @@ function addPolicySheet(wb) {
 }
 
 const DEFAULT_REPORT_NAME = 'Compliance SLA Report';
+// Runs one step of report building; failures name the step so problems can be pinned down
+function stage(name, fn) {
+  try { return fn(); }
+  catch (e) { console.error(`Report step "${name}" failed:`, e); throw new Error(`${name}: ${e.message || e}`); }
+}
 async function buildReportWorkbook(title = DEFAULT_REPORT_NAME) {
   const everything = evaluated(), all = exportable(everything), agg = aggregate(all);
   agg.excluded = everything.length - all.length;
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Compliance SLA Tracker'; wb.created = new Date(); wb.title = title;
-  addDashboardSheet(wb, all, agg, title);
-  addSummarySheet(wb, all, agg, title);
-  if (state.snapshots.length) addTrendSheet(wb);
-  addFindingsSheet(wb, 'All Findings', all.slice().sort((a, b) => cmp(a, b, 'status') || cmp(a, b, 'id')));
-  addFindingsSheet(wb, 'SLA Breached', all.filter(r => r.status === 'bad').sort((a, b) => a.remaining - b.remaining), 'FFB42318');
-  addExceptionsSheet(wb, everything);
-  addPolicySheet(wb);
+  stage('Dashboard sheet', () => addDashboardSheet(wb, all, agg, title));
+  stage('Summary sheet', () => addSummarySheet(wb, all, agg, title));
+  if (state.snapshots.length) stage('Trend sheet', () => addTrendSheet(wb));
+  stage('All Findings sheet', () => addFindingsSheet(wb, 'All Findings', all.slice().sort((a, b) => cmp(a, b, 'status') || cmp(a, b, 'id'))));
+  stage('SLA Breached sheet', () => addFindingsSheet(wb, 'SLA Breached', all.filter(r => r.status === 'bad').sort((a, b) => a.remaining - b.remaining), 'FFB42318'));
+  stage('Exceptions sheet', () => addExceptionsSheet(wb, everything));
+  stage('SLA Policy sheet', () => addPolicySheet(wb));
   return wb;
 }
 async function downloadWorkbook(wb, name, onProgress) {
@@ -1786,7 +1852,7 @@ async function withBusy(btn, label, busyLabel, fn) {
   btn.disabled = true;
   const progress = f => { btn.textContent = `${busyLabel}… ${Math.round(f * 100)}%`; };
   try { await fn(progress); }
-  catch (e) { console.error(e); toast(`${busyLabel} failed: ${e.message || e}. Try a filtered export or a smaller file.`); }
+  catch (e) { console.error(e); toast(`${busyLabel} failed — ${e.message || e}. Full details are in the browser console (F12 → Console).`); }
   finally { btn.disabled = false; btn.textContent = label; }
 }
 
