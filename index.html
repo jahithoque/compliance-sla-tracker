@@ -587,7 +587,7 @@ function detectHeaderRow(aoa) { // raw reports often have title rows above the h
 
 function normSeverity(v) {
   const s = String(v ?? '').trim().toLowerCase();
-  if (/^-+$/.test(s)) return '-'; // no severity → no SLA
+  if (!s || /^(-+|n\/?a)$/.test(s)) return '-'; // "-", blank or NA → no severity, no SLA
   if (/crit/.test(s)) return 'Critical';
   if (/high/.test(s)) return 'High';
   if (/med|moderate/.test(s)) return 'Medium';
@@ -748,7 +748,7 @@ function hashKey(s) { // FNV-1a, compact key for new/resolved comparison between
 }
 function recordSnapshot(rows, fileName) {
   const asOf = asOfDate(rows);
-  const ev = rows.map(r => ({ ...r, ...evaluate(r, state.settings, asOf) }));
+  const ev = exportable(rows).map(r => ({ ...r, ...evaluate(r, state.settings, asOf) })); // trends feed the report
   const c = statusCounts(ev);
   const openKeys = [...new Set(ev.filter(r => isOpen(r.status)).map(r => hashKey(itemKey(r))))];
   const prev = state.snapshots.find(s => s.asOf === asOf);
@@ -797,6 +797,10 @@ function slaRule(row, s = state.settings) {
   if (grp === 'NA') return { net, grp, days: null, label: 'No SLA (severity "-")' };
   return { net, grp, days: s.sla[net][grp], label: `${net} · ${GROUP_LABEL[grp]}${known ? '' : ' (fallback)'}` };
 }
+
+// Severity, Last Scanned and Last Compliant all "-"/blank: no usable data. Shown in the app, left out of every export.
+const isEmptyRecord = r => r.severity === '-' && !r.lastScanned && !r.lastCompliant;
+const exportable = rows => rows.filter(r => !isEmptyRecord(r));
 
 // When did the current failure start? Returns [date, basis]
 function slaStart(row, firstSeen = state.firstSeen) {
@@ -868,6 +872,7 @@ function aggregate(all) {
     assets: new Set(all.map(r => r.asset)).size,
     stale: all.filter(r => r.stale).length,
     exceptions: all.filter(r => r.exception).length,
+    empty: all.filter(isEmptyRecord).length,
     categories: [...groupBy(all, r => r.category)].map(([name, rows]) => ({ name, ...statusCounts(rows) }))
       .sort((a, b) => b.open - a.open || b.total - a.total || a.name.localeCompare(b.name)),
     severities: [...groupBy(all, r => r.severity)].map(([name, rows]) => ({ name, ...statusCounts(rows) }))
@@ -909,7 +914,7 @@ function filtered(all) {
   const st = $('fStatus').value, sev = $('fSeverity').value, net = $('fNetwork').value, cat = $('fCategory').value;
   const staleOnly = $('fStale').checked;
   return all.filter(r =>
-    (!st || (st === 'open' ? isOpen(r.status) : st === 'exc' ? !!r.exception : r.status === st)) &&
+    (!st || (st === 'open' ? isOpen(r.status) : st === 'exc' ? !!r.exception : st === 'empty' ? isEmptyRecord(r) : r.status === st)) &&
     (!sev || r.severity === sev) &&
     (!net || r.network === net) &&
     (!cat || r.category === cat) &&
@@ -963,7 +968,7 @@ function render() {
 
   fillSelect($('fStatus'), 'All statuses',
     [['open', 'Open (not compliant)'], ...['bad', 'soon', 'within', 'accepted', 'nosla', 'ok', 'unk'].map(k => [k, STATUS[k].label]),
-     ['exc', 'Has SLA exception']], $('fStatus').value);
+     ['exc', 'Has SLA exception'], ['empty', 'Empty record (not exported)']], $('fStatus').value);
   fillSelect($('fSeverity'), 'All severities', uniq(all, 'severity', SEV_ORDER).map(v => [v]), $('fSeverity').value);
   fillSelect($('fNetwork'), 'All networks', uniq(all, 'network').map(v => [v, netLabel(v)]), $('fNetwork').value);
   fillSelect($('fCategory'), 'All test categories', uniq(all, 'category').map(v => [v]), $('fCategory').value);
@@ -972,7 +977,8 @@ function render() {
   const s = state.settings;
   $('policy').innerHTML = `SLA policy: <b>DMZ</b> High/Critical ${s.sla.DMZ.HC}d, Medium/Low ${s.sla.DMZ.ML}d ·
     <b>DRN</b> High/Critical ${s.sla.DRN.HC}d, Medium/Low ${s.sla.DRN.ML}d · "-" / Unknown use ${s.otherNetwork} rules ·
-    <b>${agg.exceptions}</b> finding(s) with exceptions`;
+    <b>${agg.exceptions}</b> finding(s) with exceptions` +
+    (agg.empty ? ` · <b>${agg.empty}</b> empty record(s) shown here but left out of exports (<a href="#" id="showEmpty">show</a>)` : '');
 
   const filterItem = (filterId, value, label, counts, labelCls = '') =>
     ({ label, labelCls, counts, attrs: `data-filter="${filterId}" data-value="${esc(value)}"` });
@@ -1075,7 +1081,7 @@ function renderTable(all) {
       <td class="num" title="${esc(r.rule)}">${r.status === 'accepted' ? '—' : r.slaDays ?? '—'}${e && e.type !== 'accepted' ? ' <span class="exc">✱</span>' : ''}</td>
       <td>${r.due ? fmtDate(r.due) : '—'}</td>
       <td class="num">${r.remaining == null ? '—' : r.remaining < 0 ? `<span style="color:var(--bad)">${r.remaining}</span>` : r.remaining}</td>
-      <td><span class="pill ${STATUS[r.status].cls}">${STATUS[r.status].label}</span></td>
+      <td><span class="pill ${STATUS[r.status].cls}">${STATUS[r.status].label}</span>${isEmptyRecord(r) ? ' <span class="stale" title="Severity, last scan and last compliant are all &quot;-&quot; — excluded from exports">not exported</span>' : ''}</td>
       <td>${e ? `<span class="exc" title="${esc(excTip)}">${EXC_LABEL[e.type]}</span> ` : ''}<button class="icon" data-edit="${r.uid}" title="Set SLA exception">✎</button></td>
     </tr>`;
   }).join('') || `<tr><td colspan="${COLUMNS.length + 2}" style="text-align:center;color:var(--muted);padding:24px">No findings match these filters.</td></tr>`;
@@ -1576,7 +1582,8 @@ function addDashboardSheet(wb, all, agg, title) {
   Object.assign(ws.getCell('B1'), { value: title, font: { bold: true, size: 20, color: { argb: XL.text } } });
   ws.getRow(1).height = 32;
   ws.mergeCells('B2:Q2');
-  Object.assign(ws.getCell('B2'), { value: `As of ${fmtDate(todayStr())}  ·  Source: ${state.fileName}  ·  ${c.total.toLocaleString()} findings across ${agg.assets} assets`,
+  Object.assign(ws.getCell('B2'), { value: `As of ${fmtDate(todayStr())}  ·  Source: ${state.fileName}  ·  ${c.total.toLocaleString()} findings across ${agg.assets} assets` +
+    (agg.excluded ? `  ·  ${agg.excluded.toLocaleString()} empty record(s) excluded (severity, last scan and last compliant all "-")` : ''),
     font: { size: 10, color: { argb: XL.muted } } });
   ws.mergeCells('B3:Q3');
   Object.assign(ws.getCell('B3'), { value: `SLA policy: DMZ High/Critical ${s.sla.DMZ.HC}d, Medium/Low ${s.sla.DMZ.ML}d  ·  DRN High/Critical ${s.sla.DRN.HC}d, Medium/Low ${s.sla.DRN.ML}d  ·  "-" / Unknown Status in QIP use ${s.otherNetwork} rules  ·  ${agg.exceptions} finding(s) under exception`,
@@ -1713,7 +1720,8 @@ function addPolicySheet(wb) {
     'Otherwise the SLA clock starts at the Last Compliant Date, or the First Detected date when that is later.',
     'Never-compliant findings start at the earliest of: First Detected, the date this tracker first saw them failing, or the Last Scanned Date.',
     `"Due soon" = ${s.dueSoon} days or fewer remaining. Scans older than ${s.staleDays} days are flagged stale.`,
-    'Severity "-" has no SLA: non-compliant findings show "No SLA" and never breach (unless given a custom due date or SLA days). Other unrecognised severities are treated as High/Critical.',
+    'Severity "-", blank or NA has no SLA: non-compliant findings show "No SLA" and never breach (unless given a custom due date or SLA days). Other unrecognised severities are treated as High/Critical.',
+    'Findings whose Severity, Last Scanned Date and Last Compliant Date are all "-" or blank are excluded from this report.',
     'Exceptions (custom SLA days, custom due date, or risk accepted) override the policy for that finding.',
   ];
   notes.forEach((n, i) => Object.assign(ws.getCell(r + i, 1), { value: '• ' + n, font: { size: 10, color: { argb: XL.muted } } }));
@@ -1721,7 +1729,8 @@ function addPolicySheet(wb) {
 
 const DEFAULT_REPORT_NAME = 'Compliance SLA Report';
 async function buildReportWorkbook(title = DEFAULT_REPORT_NAME) {
-  const all = evaluated(), agg = aggregate(all);
+  const everything = evaluated(), all = exportable(everything), agg = aggregate(all);
+  agg.excluded = everything.length - all.length;
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Compliance SLA Tracker'; wb.created = new Date(); wb.title = title;
   addDashboardSheet(wb, all, agg, title);
@@ -1729,7 +1738,7 @@ async function buildReportWorkbook(title = DEFAULT_REPORT_NAME) {
   if (state.snapshots.length) addTrendSheet(wb);
   addFindingsSheet(wb, 'All Findings', all.slice().sort((a, b) => cmp(a, b, 'status') || cmp(a, b, 'id')));
   addFindingsSheet(wb, 'SLA Breached', all.filter(r => r.status === 'bad').sort((a, b) => a.remaining - b.remaining), 'FFB42318');
-  addExceptionsSheet(wb, all);
+  addExceptionsSheet(wb, everything);
   addPolicySheet(wb);
   return wb;
 }
@@ -1764,8 +1773,10 @@ async function downloadReport() {
 async function exportView() {
   await withBusy($('btnExport'), 'Export view (.xlsx)', 'Exporting', async progress => {
     await tick();
+    const view = sortRows(filtered(evaluated())), rows = exportable(view);
+    if (view.length && !rows.length) return toast('These are empty records (severity, last scan and last compliant all "-") — they are not exported.');
     const wb = new ExcelJS.Workbook();
-    addFindingsSheet(wb, 'Filtered Findings', sortRows(filtered(evaluated())));
+    addFindingsSheet(wb, 'Filtered Findings', rows);
     await downloadWorkbook(wb, `compliance-findings-${todayStr()}.xlsx`, progress);
   });
 }
@@ -1812,6 +1823,10 @@ document.addEventListener('drop', e => { const f = e.dataTransfer?.files?.[0]; i
   $(id).addEventListener('input', () => { view.page = 0; render(); }));
 $('fStatus').addEventListener('input', () => { view.page = 0; view.kpi = ''; render(); });
 $('btnReset').onclick = () => resetFilters();
+$('policy').addEventListener('click', e => {
+  if (e.target.id !== 'showEmpty') return;
+  e.preventDefault(); $('fStatus').value = 'empty'; view.page = 0; render();
+});
 $('btnExport').onclick = exportView;
 $('prev').onclick = () => { view.page--; render(); };
 $('next').onclick = () => { view.page++; render(); };

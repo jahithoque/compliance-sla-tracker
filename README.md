@@ -21,8 +21,9 @@ No server, no install: open `index.html` in Edge, Chrome or Firefox. Uploaded da
 | DMZ | 60 days | 120 days |
 | DRN | 110 days | 180 days |
 
-`-` and `Unknown Status in QIP` use the DMZ rules by default. Severity `-` has **no SLA**: non-compliant findings
-show "No SLA" and never breach.
+`-` and `Unknown Status in QIP` use the DMZ rules by default. Severity `-`, blank or `NA` has **no SLA**:
+non-compliant findings show "No SLA" and never breach. Findings whose Severity, Last Scanned and Last Compliant are
+all `-`/blank stay visible in the app but are left out of exported reports.
 
 - **Compliant**: Last Compliant Date is on or after Last Scanned Date.
 - **SLA clock start**: Last Compliant Date, or First Detected if later. Never-compliant findings use the earliest of
