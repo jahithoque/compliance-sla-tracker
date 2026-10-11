@@ -85,7 +85,7 @@
   .bar span { display: block; height: 100%; }
   .bar .s-ok { background: var(--ok); } .bar .s-within { background: var(--neutral); }
   .bar .s-soon { background: var(--warn); } .bar .s-bad { background: var(--bad); }
-  .bar .s-acc { background: var(--acc); } .bar .s-unk { background: var(--border); }
+  .bar .s-acc { background: var(--acc); } .bar .s-unk { background: var(--border); } .bar .s-nosla { background: var(--muted); opacity: .55; }
   .bnum { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
   .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 8px; }
   .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
@@ -221,6 +221,7 @@
       <span><i style="background:var(--warn)"></i>Due soon</span>
       <span><i style="background:var(--bad)"></i>SLA breached</span>
       <span><i style="background:var(--acc)"></i>Risk accepted</span>
+      <span><i style="background:var(--muted);opacity:.55"></i>No SLA (severity "-")</span>
       <span><i style="background:var(--border)"></i>No dates</span>
     </div>
 
@@ -351,6 +352,21 @@
   </div>
 </dialog>
 
+<dialog id="reportDlg">
+  <h2>Download report</h2>
+  <p class="help">The name is used as the report title and in the file name.</p>
+  <div class="stack">
+    <label for="reportName">Report name</label>
+    <input id="reportName" list="reportNames" maxlength="80" placeholder="e.g. Server Compliance Report Q2">
+    <datalist id="reportNames"></datalist>
+  </div>
+  <p class="help" id="reportFile" style="margin-top:10px"></p>
+  <div class="actions">
+    <button id="reportCancel">Cancel</button>
+    <button id="reportGo" class="primary">Download</button>
+  </div>
+</dialog>
+
 <div id="toast"></div>
 
 <script>
@@ -362,7 +378,7 @@ const DEFAULT_SETTINGS = {
   otherNetwork: 'DMZ', // rules used for "-" and "Unknown Status in QIP"
   dueSoon: 7, staleDays: 30,
 };
-const GROUP_LABEL = { HC: 'High/Critical', ML: 'Medium/Low' };
+const GROUP_LABEL = { HC: 'High/Critical', ML: 'Medium/Low', NA: 'No severity (-)' };
 const STORE_KEY = 'complianceTracker.v1';
 const STATUS = {
   ok:       { label: 'Compliant',     cls: 'p-ok',     bar: 's-ok' },
@@ -370,13 +386,14 @@ const STATUS = {
   soon:     { label: 'Due soon',      cls: 'p-soon',   bar: 's-soon' },
   bad:      { label: 'SLA breached',  cls: 'p-bad',    bar: 's-bad' },
   accepted: { label: 'Risk accepted', cls: 'p-acc',    bar: 's-acc' },
+  nosla:    { label: 'No SLA',        cls: 'p-unk',    bar: 's-nosla' },
   unk:      { label: 'No dates',      cls: 'p-unk',    bar: 's-unk' },
 };
-const BAR_KEYS = ['ok', 'within', 'soon', 'bad', 'accepted', 'unk'];
+const BAR_KEYS = ['ok', 'within', 'soon', 'bad', 'accepted', 'nosla', 'unk'];
 const OPEN_KEYS = ['bad', 'soon', 'within', 'accepted'];
 const isOpen = s => OPEN_KEYS.includes(s);
-const SEV_ORDER = { Critical: 0, High: 1, Medium: 2, Low: 3 };
-const STATUS_ORDER = { bad: 0, soon: 1, within: 2, accepted: 3, unk: 4, ok: 5 };
+const SEV_ORDER = { Critical: 0, High: 1, Medium: 2, Low: 3, '-': 5 };
+const STATUS_ORDER = { bad: 0, soon: 1, within: 2, accepted: 3, nosla: 4, unk: 5, ok: 6 };
 const EXC_LABEL = { days: 'Custom SLA days', date: 'Custom due date', accepted: 'Risk accepted' };
 
 let state = {
@@ -386,6 +403,7 @@ let state = {
   snapshots: [],   // one per imported file, sorted by asOf
   lastOpen: null,  // { asOf, keys: [hash] } open findings of the newest snapshot, for new/resolved counts
   mapMemory: {},   // normalized source header → tracker field, from previous confirmed mappings
+  reportNames: [], // recently used report names, newest first
 };
 let view = { sort: { key: 'status', dir: 1 }, page: 0, pageSize: 50, kpi: '', selected: new Set(), lastFiltered: [], tab: 'dash' };
 
@@ -434,7 +452,7 @@ async function load() {
   if (!s) { try { const raw = localStorage.getItem(STORE_KEY); if (raw) s = JSON.parse(raw); } catch (e) { /* none */ } }
   if (!s) return;
   state = { ...state, ...s, settings: mergeSettings(s.settings), exceptions: s.exceptions || {},
-            firstSeen: s.firstSeen || {}, snapshots: s.snapshots || [], mapMemory: s.mapMemory || {} };
+            firstSeen: s.firstSeen || {}, snapshots: s.snapshots || [], mapMemory: s.mapMemory || {}, reportNames: s.reportNames || [] };
 }
 
 // ---------- Date helpers (all dates stored as YYYY-MM-DD local) ----------
@@ -569,6 +587,7 @@ function detectHeaderRow(aoa) { // raw reports often have title rows above the h
 
 function normSeverity(v) {
   const s = String(v ?? '').trim().toLowerCase();
+  if (/^-+$/.test(s)) return '-'; // no severity → no SLA
   if (/crit/.test(s)) return 'Critical';
   if (/high/.test(s)) return 'High';
   if (/med|moderate/.test(s)) return 'Medium';
@@ -612,9 +631,12 @@ const latestSnapshot = () => state.snapshots[state.snapshots.length - 1] || null
 let pending = null; // file being mapped
 async function importFile(file) {
   try {
+    toast(`Reading ${file.name}… large reports can take a few seconds.`);
+    await tick(); // paint the message before the synchronous parse
     const buf = await file.arrayBuffer();
-    const wb = XLSX.read(new Uint8Array(buf), { type: 'array', cellDates: true });
-    const sheets = wb.SheetNames.map(name => ({ name, aoa: XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: '', raw: true }) }))
+    // dense mode + no blank padding keep memory down on very large raw reports
+    const wb = XLSX.read(new Uint8Array(buf), { type: 'array', cellDates: true, dense: true });
+    const sheets = wb.SheetNames.map(name => ({ name, aoa: XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true }) }))
       .filter(s => s.aoa.length);
     if (!sheets.length) throw new Error('The file has no data.');
     // Pick the sheet whose best header row matches the most tracker fields
@@ -623,6 +645,7 @@ async function importFile(file) {
     pending = { fileName: file.name, sheets, sheetIdx: best.i, headerRow: best.hr, currentTouched: false };
     pending.map = autoMap(headersOf(), dataRowsOf());
     renderMapping();
+    $('toast').classList.remove('show');
     $('mapDlg').showModal();
   } catch (e) {
     console.error(e);
@@ -683,7 +706,7 @@ function updateMapPreview() {
     const odd = (key, known) => [...new Set(rows.map(r => r[key]))].filter(v => !known.includes(v));
     const oddNet = odd('network', ['DMZ', 'DRN', '-', 'Unknown Status in QIP']);
     if (oddNet.length) warns.push(['warn', `Network values not recognised: ${oddNet.slice(0, 6).map(esc).join(', ')}${oddNet.length > 6 ? '…' : ''} — these use the "${state.settings.otherNetwork}" fallback SLA.`]);
-    const oddSev = odd('severity', ['Critical', 'High', 'Medium', 'Low']);
+    const oddSev = odd('severity', ['Critical', 'High', 'Medium', 'Low', '-']);
     if (oddSev.length) warns.push(['warn', `Severity values not recognised: ${oddSev.slice(0, 6).map(esc).join(', ')} — treated as High/Critical.`]);
     if (map.id === undefined) warns.push(['info', 'No # column mapped — findings will be numbered in file order.']);
     if (map.firstDetected === undefined) warns.push(['info', 'No First Detected column — never-compliant findings will use the earliest date this tracker has seen them failing.']);
@@ -739,7 +762,7 @@ function recordSnapshot(rows, fileName) {
     state.lastOpen = { asOf, keys: openKeys };
   }
   const snap = { asOf, fileName, importedAt: new Date().toISOString(), assets: new Set(rows.map(r => r.asset)).size,
-                 total: c.total, ok: c.ok, open: c.open, within: c.within, soon: c.soon, bad: c.bad, accepted: c.accepted, unk: c.unk,
+                 total: c.total, ok: c.ok, open: c.open, within: c.within, soon: c.soon, bad: c.bad, accepted: c.accepted, nosla: c.nosla, unk: c.unk,
                  newOpen, resolved };
   state.snapshots = state.snapshots.filter(s => s.asOf !== asOf).concat(snap).sort((a, b) => a.asOf.localeCompare(b.asOf));
   return snap;
@@ -765,11 +788,13 @@ function applyImport(rows, fileName, makeCurrent) {
 // ---------- SLA evaluation ----------
 // Exceptions are keyed by the finding's identity so they survive re-uploads of a fresh sheet
 const itemKey = r => [r.asset, r.category, r.setting].map(v => String(v).trim().toLowerCase()).join('|');
-const sevGroup = sev => (sev === 'Medium' || sev === 'Low') ? 'ML' : 'HC'; // unknown severity → stricter group
+// Severity "-" has no SLA; any other unrecognised severity falls into the stricter group
+const sevGroup = sev => sev === '-' ? 'NA' : (sev === 'Medium' || sev === 'Low') ? 'ML' : 'HC';
 function slaRule(row, s = state.settings) {
   const known = row.network === 'DMZ' || row.network === 'DRN';
   const net = known ? row.network : s.otherNetwork;
   const grp = sevGroup(row.severity);
+  if (grp === 'NA') return { net, grp, days: null, label: 'No SLA (severity "-")' };
   return { net, grp, days: s.sla[net][grp], label: `${net} · ${GROUP_LABEL[grp]}${known ? '' : ' (fallback)'}` };
 }
 
@@ -798,6 +823,7 @@ function evaluate(row, s = state.settings, today = todayStr(), exceptions = stat
   base.start = start; base.basis = basis;
   const daysOut = t - dayNum(start);
   if (exception?.type === 'accepted') return { ...base, status: 'accepted', daysOut };
+  if (base.slaDays == null && exception?.type !== 'date') return { ...base, status: 'nosla', daysOut }; // severity "-"
   const due = exception?.type === 'date' ? exception.date : addDays(start, base.slaDays);
   const remaining = dayNum(due) - t;
   const slaDays = dayNum(due) - dayNum(start);
@@ -832,9 +858,9 @@ function aggregate(all) {
   const networks = [...new Set(all.map(r => r.network))].sort((a, b) =>
     (['DMZ', 'DRN'].indexOf(a) + 1 || 9) - (['DMZ', 'DRN'].indexOf(b) + 1 || 9) || a.localeCompare(b));
   const netSev = [];
-  for (const network of networks) for (const grp of ['HC', 'ML']) {
+  for (const network of networks) for (const grp of ['HC', 'ML', 'NA']) {
     const rows = all.filter(r => r.network === network && sevGroup(r.severity) === grp);
-    if (rows.length) netSev.push({ network, grp, rule: slaRule({ network, severity: grp === 'HC' ? 'High' : 'Low' }), ...statusCounts(rows) });
+    if (rows.length) netSev.push({ network, grp, rule: slaRule({ network, severity: { HC: 'High', ML: 'Low', NA: '-' }[grp] }), ...statusCounts(rows) });
   }
   const sevRank = rows => rows.reduce((best, r) => (SEV_ORDER[r.severity] ?? 9) < (SEV_ORDER[best] ?? 9) ? r.severity : best, rows[0].severity);
   return {
@@ -936,7 +962,7 @@ function render() {
   const agg = aggregate(all);
 
   fillSelect($('fStatus'), 'All statuses',
-    [['open', 'Open (not compliant)'], ...['bad', 'soon', 'within', 'accepted', 'ok', 'unk'].map(k => [k, STATUS[k].label]),
+    [['open', 'Open (not compliant)'], ...['bad', 'soon', 'within', 'accepted', 'nosla', 'ok', 'unk'].map(k => [k, STATUS[k].label]),
      ['exc', 'Has SLA exception']], $('fStatus').value);
   fillSelect($('fSeverity'), 'All severities', uniq(all, 'severity', SEV_ORDER).map(v => [v]), $('fSeverity').value);
   fillSelect($('fNetwork'), 'All networks', uniq(all, 'network').map(v => [v, netLabel(v)]), $('fNetwork').value);
@@ -998,6 +1024,7 @@ function renderKpis(agg) {
     ['bad', 'k-bad', 'SLA breached', c.bad, pct(c.bad) + ' of findings'],
     ['accepted', 'k-acc', 'Risk accepted', c.accepted, 'no SLA deadline'],
     ['stale', 'k-stale', 'Stale scans', agg.stale, `> ${s.staleDays} days old`],
+    ...(c.nosla ? [['nosla', 'k-stale', 'No SLA', c.nosla, 'severity "-", not compliant']] : []),
   ];
   $('kpis').innerHTML = tiles.map(([k, cls, label, val, sub]) =>
     `<div class="kpi ${cls} ${view.kpi === k && k ? 'active' : ''}" data-kpi="${k}">
@@ -1045,7 +1072,7 @@ function renderTable(all) {
       <td>${fmtDate(r.lastCompliant)}</td>
       <td title="${esc(r.basis)}">${r.start ? fmtDate(r.start) : '—'}${r.basis && r.basis !== 'Last compliant' ? ` <span style="color:var(--muted);font-size:11px">${r.basis === 'First detected' ? 'detected' : r.basis === 'First seen by tracker' ? 'tracked' : 'est.'}</span>` : ''}</td>
       <td class="num">${r.daysOut ?? '—'}</td>
-      <td class="num" title="${esc(r.rule)}">${r.status === 'accepted' ? '—' : r.slaDays}${e && e.type !== 'accepted' ? ' <span class="exc">✱</span>' : ''}</td>
+      <td class="num" title="${esc(r.rule)}">${r.status === 'accepted' ? '—' : r.slaDays ?? '—'}${e && e.type !== 'accepted' ? ' <span class="exc">✱</span>' : ''}</td>
       <td>${r.due ? fmtDate(r.due) : '—'}</td>
       <td class="num">${r.remaining == null ? '—' : r.remaining < 0 ? `<span style="color:var(--bad)">${r.remaining}</span>` : r.remaining}</td>
       <td><span class="pill ${STATUS[r.status].cls}">${STATUS[r.status].label}</span></td>
@@ -1074,7 +1101,7 @@ function openException(uids) {
   const existing = excTarget.map(k => state.exceptions[k]).filter(Boolean);
   $('excTitle').textContent = rows.length === 1 ? 'SLA exception' : `SLA exception — ${rows.length} findings`;
   $('excInfo').textContent = rows.length === 1
-    ? `${r0.asset} · ${r0.setting} — standard policy: ${r0.policyDays} days (${r0.rule}).`
+    ? `${r0.asset} · ${r0.setting} — standard policy: ${r0.policyDays == null ? 'no SLA' : r0.policyDays + ' days'} (${r0.rule}).`
     : `Applies to ${excTarget.length} distinct finding(s). ${existing.length} already have an exception and will be overwritten.`;
   const e = existing.length === excTarget.length && existing.every(x => JSON.stringify(x) === JSON.stringify(existing[0])) ? existing[0] : null;
   document.querySelector(`input[name=excType][value=${e ? e.type : 'policy'}]`).checked = true;
@@ -1110,7 +1137,7 @@ function saveException() {
 const XL = {
   header: 'FF1F3B6E', headerText: 'FFFFFFFF', border: 'FFD0D5DC', text: 'FF1B1F24', muted: 'FF5D6673', band: 'FFF6F7F9',
   status: { ok: ['FFE3F4EA', 'FF1F7A4A'], within: ['FFECEFF2', 'FF4B5563'], soon: ['FFFDF0D5', 'FF9A6200'],
-            bad: ['FFFDE7E5', 'FFB42318'], accepted: ['FFEDE9FB', 'FF5B45C4'], unk: ['FFF3F4F6', 'FF6B7280'] },
+            bad: ['FFFDE7E5', 'FFB42318'], accepted: ['FFEDE9FB', 'FF5B45C4'], nosla: ['FFF3F4F6', 'FF4B5563'], unk: ['FFF3F4F6', 'FF6B7280'] },
 };
 const fill = argb => ({ type: 'pattern', pattern: 'solid', fgColor: { argb } });
 const thin = { style: 'thin', color: { argb: XL.border } };
@@ -1132,34 +1159,192 @@ function styleStatus(cell, status) {
   cell.fill = fill(bg); cell.font = { bold: true, color: { argb: fg } };
 }
 
+// Data sheets (findings, exceptions) can hold 100k+ rows. Building them as ExcelJS cells takes
+// gigabytes and crashes the tab, so ExcelJS only builds the header plus one style-template row;
+// writeWorkbook() then streams the real rows into the file in compressed chunks.
+const XL_MAX_ROWS = 1048575; // Excel's row limit minus the header
 const FINDING_COLS = [
-  ['#', 7, r => numOrText(r.id)], ['Asset', 22, r => r.asset], ['Network', 20, r => r.network],
-  ['Severity', 10, r => r.severity], ['Test Category', 20, r => r.category], ['Setting', 48, r => r.setting],
-  ['Last Scanned Date', 13, r => xlDate(r.lastScanned)], ['Last Compliant Date', 13, r => xlDate(r.lastCompliant)],
-  ['SLA Start Date', 13, r => xlDate(r.start)], ['SLA Start Basis', 22, r => r.basis],
-  ['Days Non-Compliant', 12, r => r.daysOut], ['SLA Rule', 26, r => r.rule],
-  ['SLA Days', 9, r => r.status === 'accepted' ? null : r.slaDays], ['SLA Due Date', 13, r => xlDate(r.due)],
-  ['Days Left', 9, r => r.remaining], ['Status', 14, r => STATUS[r.status].label], ['Stale Scan', 9, r => r.stale ? 'Yes' : 'No'],
-  ['Exception', 16, r => r.exception ? EXC_LABEL[r.exception.type] : ''], ['Exception Reason', 36, r => r.exception?.reason || ''],
-  ['Approved By', 16, r => r.exception?.by || ''],
+  { header: '#', width: 7, value: r => numOrText(r.id) },
+  { header: 'Asset', width: 22, value: r => r.asset },
+  { header: 'Network', width: 20, value: r => r.network },
+  { header: 'Severity', width: 10, value: r => r.severity },
+  { header: 'Test Category', width: 20, value: r => r.category },
+  { header: 'Setting', width: 48, type: 'wrap', value: r => r.setting },
+  { header: 'Last Scanned Date', width: 13, type: 'date', value: r => r.lastScanned },
+  { header: 'Last Compliant Date', width: 13, type: 'date', value: r => r.lastCompliant },
+  { header: 'SLA Start Date', width: 13, type: 'date', value: r => r.start },
+  { header: 'SLA Start Basis', width: 22, value: r => r.basis },
+  { header: 'Days Non-Compliant', width: 12, value: r => r.daysOut },
+  { header: 'SLA Rule', width: 26, value: r => r.rule },
+  { header: 'SLA Days', width: 9, value: r => r.status === 'accepted' ? null : r.slaDays },
+  { header: 'SLA Due Date', width: 13, type: 'date', value: r => r.due },
+  { header: 'Days Left', width: 9, negRed: true, value: r => r.remaining },
+  { header: 'Status', width: 14, status: true, value: r => STATUS[r.status].label },
+  { header: 'Stale Scan', width: 9, value: r => r.stale ? 'Yes' : 'No' },
+  { header: 'Exception', width: 16, value: r => r.exception ? EXC_LABEL[r.exception.type] : '' },
+  { header: 'Exception Reason', width: 36, type: 'wrap', value: r => r.exception?.reason || '' },
+  { header: 'Approved By', width: 16, value: r => r.exception?.by || '' },
 ];
-function addFindingsSheet(wb, name, rows, tabColor) {
+// Date columns take 'YYYY-MM-DD' strings (or a free-text fallback like "365 days")
+function addDataSheet(wb, name, cols, rows, { tabColor } = {}) {
   const ws = wb.addWorksheet(name, { properties: { tabColor: tabColor && { argb: tabColor } }, pageSetup: PRINT,
                                      views: [{ state: 'frozen', ySplit: 1 }] });
-  ws.columns = FINDING_COLS.map(([header, width]) => ({ header, width }));
+  ws.columns = cols.map(c => ({ header: c.header, width: c.width }));
   styleHeader(ws.getRow(1));
-  const col = name => FINDING_COLS.findIndex(c => c[0] === name) + 1;
-  const wrapCols = [col('Setting'), col('Exception Reason')];
-  for (const r of rows) {
-    const row = ws.addRow(FINDING_COLS.map(c => c[2](r) ?? null));
-    wrapCols.forEach(i => row.getCell(i).alignment = { wrapText: true, vertical: 'top' });
-    styleStatus(row.getCell(col('Status')), r.status);
-    if (r.remaining < 0) row.getCell(col('Days Left')).font = { color: { argb: XL.status.bad[1] }, bold: true };
-  }
-  ['Last Scanned Date', 'Last Compliant Date', 'SLA Start Date', 'SLA Due Date'].forEach(n => ws.getColumn(col(n)).numFmt = 'dd-mmm-yyyy');
-  ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: FINDING_COLS.length } };
+  const tpl = ws.getRow(2);
+  cols.forEach((c, i) => {
+    const cell = tpl.getCell(i + 1);
+    cell.value = c.type === 'date' ? new Date(Date.UTC(2026, 0, 1)) : 'x';
+    if (c.type === 'date') cell.numFmt = 'dd-mmm-yyyy';
+    if (c.type === 'wrap') cell.alignment = { wrapText: true, vertical: 'top' };
+  });
+  if (rows.length > XL_MAX_ROWS) { toast(`"${name}" has more rows than Excel allows — only the first ${XL_MAX_ROWS.toLocaleString()} are included.`); rows = rows.slice(0, XL_MAX_ROWS); }
+  const last = rows.length + 1;
+  // One conditional-format rule per column instead of a style on every cell
+  cols.forEach((c, i) => {
+    if (!rows.length) return;
+    const L = XLSX.utils.encode_col(i), ref = `${L}2:${L}${last}`;
+    if (c.status) ws.addConditionalFormatting({ ref, rules: Object.entries(XL.status).map(([k, [bg, fg]], p) => ({
+      type: 'cellIs', operator: 'equal', priority: p + 1, formulae: [`"${STATUS[k].label}"`],
+      style: { fill: { type: 'pattern', pattern: 'solid', bgColor: { argb: bg } }, font: { bold: true, color: { argb: fg } } } })) });
+    if (c.negRed) ws.addConditionalFormatting({ ref, rules: [{ type: 'cellIs', operator: 'lessThan', priority: 1, formulae: ['0'],
+      style: { font: { bold: true, color: { argb: XL.status.bad[1] } } } }] });
+  });
+  ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: cols.length } };
   ws.pageSetup.printTitlesRow = '1:1';
+  (wb._dataSheets ||= []).push({ name, cols, rows });
   return ws;
+}
+const addFindingsSheet = (wb, name, rows, tabColor) => addDataSheet(wb, name, FINDING_COLS, rows, { tabColor });
+
+// ---------- Streaming .xlsx writer ----------
+const CRC_TABLE = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(u8, crc = 0) {
+  crc = ~crc >>> 0;
+  for (let i = 0; i < u8.length; i++) crc = CRC_TABLE[(crc ^ u8[i]) & 0xFF] ^ (crc >>> 8);
+  return ~crc >>> 0;
+}
+// Pipes chunks through a (De)CompressionStream; without one (old browsers) data is stored uncompressed
+function byteSink(kind) {
+  const out = [], hasStream = kind === 'deflate' ? typeof CompressionStream !== 'undefined' : true;
+  let size = 0, writer = null, pump = null;
+  if (kind === 'deflate' && hasStream || kind === 'inflate') {
+    const ts = kind === 'deflate' ? new CompressionStream('deflate-raw') : new DecompressionStream('deflate-raw');
+    writer = ts.writable.getWriter();
+    const reader = ts.readable.getReader();
+    pump = (async () => { for (;;) { const { done, value } = await reader.read(); if (done) return; out.push(value); size += value.length; } })();
+  }
+  return {
+    method: writer ? 8 : 0,
+    async write(chunk) { if (writer) await writer.write(chunk); else { out.push(chunk); size += chunk.length; } },
+    async finish() { if (writer) { await writer.close(); await pump; } return { parts: out, size }; },
+  };
+}
+function readZip(u8) {
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength), dec = new TextDecoder();
+  let eocd = u8.length - 22;
+  while (eocd >= 0 && dv.getUint32(eocd, true) !== 0x06054b50) eocd--;
+  if (eocd < 0) throw new Error('Unexpected workbook format');
+  const count = dv.getUint16(eocd + 10, true), entries = [];
+  for (let i = 0, p = dv.getUint32(eocd + 16, true); i < count; i++) {
+    const nlen = dv.getUint16(p + 28, true), off = dv.getUint32(p + 42, true), csize = dv.getUint32(p + 20, true);
+    const start = off + 30 + dv.getUint16(off + 26, true) + dv.getUint16(off + 28, true);
+    entries.push({ name: dec.decode(u8.subarray(p + 46, p + 46 + nlen)), method: dv.getUint16(p + 10, true),
+      time: dv.getUint16(p + 12, true), date: dv.getUint16(p + 14, true), crc: dv.getUint32(p + 16, true),
+      csize, usize: dv.getUint32(p + 24, true), parts: [u8.subarray(start, start + csize)] });
+    p += 46 + nlen + dv.getUint16(p + 30, true) + dv.getUint16(p + 32, true);
+  }
+  return entries;
+}
+async function entryText(e) {
+  if (e.method === 0) return new TextDecoder().decode(e.parts[0]);
+  const sink = byteSink('inflate'); await sink.write(e.parts[0]);
+  const { parts } = await sink.finish();
+  return new TextDecoder().decode(await new Blob(parts).arrayBuffer());
+}
+function zipParts(entries) {
+  const enc = new TextEncoder(), out = [], central = [];
+  let offset = 0;
+  for (const e of entries) {
+    const name = enc.encode(e.name);
+    const lh = new Uint8Array(30 + name.length), lv = new DataView(lh.buffer);
+    lv.setUint32(0, 0x04034b50, true); lv.setUint16(4, 20, true); lv.setUint16(8, e.method, true);
+    lv.setUint16(10, e.time, true); lv.setUint16(12, e.date, true); lv.setUint32(14, e.crc, true);
+    lv.setUint32(18, e.csize, true); lv.setUint32(22, e.usize, true); lv.setUint16(26, name.length, true); lh.set(name, 30);
+    out.push(lh); for (const p of e.parts) out.push(p);
+    const ch = new Uint8Array(46 + name.length), cv = new DataView(ch.buffer);
+    cv.setUint32(0, 0x02014b50, true); cv.setUint16(4, 20, true); cv.setUint16(6, 20, true); cv.setUint16(10, e.method, true);
+    cv.setUint16(12, e.time, true); cv.setUint16(14, e.date, true); cv.setUint32(16, e.crc, true);
+    cv.setUint32(20, e.csize, true); cv.setUint32(24, e.usize, true); cv.setUint16(28, name.length, true);
+    cv.setUint32(42, offset, true); ch.set(name, 46);
+    central.push(ch);
+    offset += lh.length + e.csize;
+  }
+  const cdSize = central.reduce((s, c) => s + c.length, 0), end = new Uint8Array(22), ev = new DataView(end.buffer);
+  ev.setUint32(0, 0x06054b50, true); ev.setUint16(8, entries.length, true); ev.setUint16(10, entries.length, true);
+  ev.setUint32(12, cdSize, true); ev.setUint32(16, offset, true);
+  return out.concat(central, [end]);
+}
+
+const XML_BAD = /[\x00-\x08\x0B\x0C\x0E-\x1F￾￿]/g;
+const xmlEsc = s => s.replace(XML_BAD, '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function cellXml(ref, v, s, isDate) {
+  if (v == null || v === '') return '';
+  const sa = s ? ` s="${s}"` : '';
+  if (isDate && typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)) return `<c r="${ref}"${sa}><v>${dayNum(v) + 25569}</v></c>`;
+  if (typeof v === 'number') return Number.isFinite(v) ? `<c r="${ref}"${sa}><v>${v}</v></c>` : '';
+  return `<c r="${ref}"${sa} t="inlineStr"><is><t xml:space="preserve">${xmlEsc(String(v).slice(0, 32767))}</t></is></c>`;
+}
+
+const tick = () => new Promise(r => setTimeout(r, 0)); // let the page repaint between chunks
+async function writeWorkbook(wb, onProgress = () => {}) {
+  const base = new Uint8Array(await wb.xlsx.writeBuffer());
+  const sheets = wb._dataSheets || [];
+  if (!sheets.length) return [base];
+  const entries = readZip(base), byName = new Map(entries.map(e => [e.name, e]));
+  const wbXml = await entryText(byName.get('xl/workbook.xml'));
+  const relsXml = await entryText(byName.get('xl/_rels/workbook.xml.rels'));
+  const total = sheets.reduce((s, d) => s + d.rows.length, 0) || 1;
+  let done = 0;
+  for (const d of sheets) {
+    // Locate the sheet's XML part via workbook.xml → relationships
+    const tag = wbXml.match(new RegExp(`<sheet [^>]*name="${xmlEsc(d.name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"[^>]*>`))[0];
+    const rid = tag.match(/r:id="([^"]+)"/)[1];
+    const target = relsXml.match(new RegExp(`<Relationship [^>]*Id="${rid}"[^>]*>`))[0].match(/Target="([^"]+)"/)[1];
+    const path = target.startsWith('/') ? target.slice(1) : 'xl/' + target;
+    const entry = byName.get(path), xml = await entryText(entry);
+    const open = xml.indexOf('<sheetData>'), close = xml.indexOf('</sheetData>');
+    const body = xml.slice(open + 11, close);
+    const header = body.match(/<row r="1"[\s\S]*?<\/row>/)[0];
+    const tplRow = (body.match(/<row r="2"[\s\S]*?<\/row>/) || [''])[0];
+    const styles = d.cols.map((_, i) => { const m = tplRow.match(new RegExp(`<c r="${XLSX.utils.encode_col(i)}2"([^>]*?)/?>`)); return m && (m[1].match(/ s="(\d+)"/) || [])[1]; });
+    const letters = d.cols.map((_, i) => XLSX.utils.encode_col(i));
+    const dim = `A1:${letters[letters.length - 1]}${d.rows.length + 1}`;
+    const head = xml.slice(0, open + 11).replace(/<dimension ref="[^"]*"\/>/, `<dimension ref="${dim}"/>`);
+
+    const enc = new TextEncoder(), sink = byteSink('deflate');
+    let crc = 0, usize = 0;
+    const put = async str => { const b = enc.encode(str); crc = crc32(b, crc); usize += b.length; await sink.write(b); };
+    await put(head + header);
+    const CHUNK = 2000;
+    for (let i = 0; i < d.rows.length; i += CHUNK) {
+      const parts = [];
+      for (let j = i; j < Math.min(i + CHUNK, d.rows.length); j++) {
+        const r = d.rows[j], n = j + 2;
+        let cells = '';
+        d.cols.forEach((c, k) => { cells += cellXml(letters[k] + n, c.value(r), styles[k], c.type === 'date'); });
+        parts.push(`<row r="${n}">${cells}</row>`);
+      }
+      await put(parts.join(''));
+      done += Math.min(CHUNK, d.rows.length - i);
+      onProgress(done / total);
+      await tick();
+    }
+    await put(xml.slice(close));
+    const { parts, size } = await sink.finish();
+    Object.assign(entry, { method: sink.method, crc, csize: size, usize, parts });
+  }
+  return zipParts(entries);
 }
 
 // Writes a titled table; returns the next free row
@@ -1184,7 +1369,7 @@ function addTable(ws, r, title, headers, data, { pctCols = [], statusCol, note }
 }
 
 // ---------- Chart drawing (canvas → PNG for the report) ----------
-const RC = { ok: '#2e8b57', within: '#8a94a3', soon: '#e0a100', bad: '#c62828', accepted: '#6d5bd0', unk: '#cfd4db',
+const RC = { ok: '#2e8b57', within: '#8a94a3', soon: '#e0a100', bad: '#c62828', accepted: '#6d5bd0', nosla: '#a7b0bd', unk: '#cfd4db',
              text: '#1b1f24', muted: '#5d6673', grid: '#e8eaee', frame: '#dde1e6' };
 const FONT = '"Segoe UI", Arial, Helvetica, sans-serif';
 
@@ -1365,7 +1550,7 @@ function reportCharts(agg) {
       parts: BAR_KEYS.map(k => ({ label: STATUS[k].label, value: s[k], color: RC[k] })) }),
     netSev: hbarChart({ title: 'Open issues by network & severity', subtitle: 'Label shows the SLA applied',
       w: half, labelW: 270, keys: openKeys,
-      rows: agg.netSev.map(g => ({ ...g, label: `${netLabel(g.network)} · ${GROUP_LABEL[g.grp]} (${g.rule.days}d)` })) }),
+      rows: agg.netSev.map(g => ({ ...g, label: `${netLabel(g.network)} · ${GROUP_LABEL[g.grp]} (${g.rule.days == null ? 'no SLA' : g.rule.days + 'd'})` })) }),
     topIssues: hbarChart({ title: 'Top 10 issues', subtitle: 'Settings with the most open findings',
       w: full, labelW: 470, keys: openKeys,
       rows: agg.topIssues.map(g => ({ ...g, label: `${g.setting}  [${g.category}]` })) }),
@@ -1381,14 +1566,14 @@ function reportCharts(agg) {
   };
 }
 
-function addDashboardSheet(wb, all, agg) {
+function addDashboardSheet(wb, all, agg, title) {
   const ws = wb.addWorksheet('Dashboard', { properties: { tabColor: { argb: XL.header } },
     views: [{ showGridLines: false }], pageSetup: { ...PRINT } });
   ws.columns = Array.from({ length: 17 }, (_, i) => ({ width: i === 0 ? 2 : 10 }));
   const s = state.settings, c = agg.status;
 
   ws.mergeCells('B1:Q1');
-  Object.assign(ws.getCell('B1'), { value: 'Compliance SLA Report', font: { bold: true, size: 20, color: { argb: XL.text } } });
+  Object.assign(ws.getCell('B1'), { value: title, font: { bold: true, size: 20, color: { argb: XL.text } } });
   ws.getRow(1).height = 32;
   ws.mergeCells('B2:Q2');
   Object.assign(ws.getCell('B2'), { value: `As of ${fmtDate(todayStr())}  ·  Source: ${state.fileName}  ·  ${c.total.toLocaleString()} findings across ${agg.assets} assets`,
@@ -1445,12 +1630,12 @@ function addDashboardSheet(wb, all, agg) {
   ws.pageSetup.printArea = `A1:Q${row}`;
 }
 
-function addSummarySheet(wb, all, agg) {
+function addSummarySheet(wb, all, agg, title) {
   const ws = wb.addWorksheet('Summary', { views: [{ showGridLines: false }], pageSetup: { ...PRINT, orientation: 'portrait' } });
   ws.columns = [{ width: 46 }, { width: 22 }, { width: 18 }, ...Array(8).fill({ width: 13 })];
   const c = agg.status;
   let r = 1;
-  Object.assign(ws.getCell(r, 1), { value: 'Compliance SLA Report — Summary Tables', font: { bold: true, size: 16 } });
+  Object.assign(ws.getCell(r, 1), { value: `${title} — Summary Tables`, font: { bold: true, size: 16 } });
   Object.assign(ws.getCell(r + 1, 1), { value: `As of ${fmtDate(todayStr())} · Source: ${state.fileName}`, font: { size: 10, color: { argb: XL.muted } } });
   r += 3;
 
@@ -1459,9 +1644,9 @@ function addSummarySheet(wb, all, agg) {
     { pctCols: [2], statusCol: 0 });
 
   r = addTable(ws, r, 'Total issues by test category',
-    ['Test Category', 'Total findings', 'Open issues', 'Within SLA', 'Due soon', 'SLA breached', 'Risk accepted', 'Compliant', 'No dates', 'Compliance %'],
-    agg.categories.map(g => [g.name, g.total, g.open, g.within, g.soon, g.bad, g.accepted, g.ok, g.unk, g.total ? g.ok / g.total : 0]),
-    { pctCols: [9] });
+    ['Test Category', 'Total findings', 'Open issues', 'Within SLA', 'Due soon', 'SLA breached', 'Risk accepted', 'No SLA (sev. -)', 'Compliant', 'No dates', 'Compliance %'],
+    agg.categories.map(g => [g.name, g.total, g.open, g.within, g.soon, g.bad, g.accepted, g.nosla, g.ok, g.unk, g.total ? g.ok / g.total : 0]),
+    { pctCols: [10] });
 
   r = addTable(ws, r, 'Network × severity',
     ['Network', 'Severity group', 'SLA rule', 'SLA days', 'Total findings', 'Open issues', 'SLA breached', 'Compliance %'],
@@ -1496,24 +1681,23 @@ function addTrendSheet(wb) {
     { pctCols: [5], note: 'One row per imported file, dated by its most recent scan. New/Resolved compare open findings with the previous snapshot.' });
 }
 
+const EXCEPTION_COLS = [
+  { header: 'Asset', width: 22, value: x => x.asset }, { header: 'Network', width: 18, value: x => x.network },
+  { header: 'Severity', width: 10, value: x => x.severity }, { header: 'Test Category', width: 20, value: x => x.category },
+  { header: 'Setting', width: 44, type: 'wrap', value: x => x.setting }, { header: 'Exception', width: 16, value: x => x.type },
+  { header: 'Custom value', width: 14, type: 'date', value: x => x.custom }, { header: 'Policy SLA (days)', width: 12, value: x => x.policy },
+  { header: 'Reason', width: 44, type: 'wrap', value: x => x.reason }, { header: 'Approved by', width: 18, value: x => x.by },
+  { header: 'Updated', width: 13, type: 'date', value: x => x.updated }, { header: 'Current status', width: 15, status: true, value: x => x.status },
+];
 function addExceptionsSheet(wb, all) {
-  const ws = wb.addWorksheet('Exceptions', { pageSetup: PRINT, views: [{ state: 'frozen', ySplit: 1 }] });
-  const cols = [['Asset', 22], ['Network', 18], ['Severity', 10], ['Test Category', 20], ['Setting', 44], ['Exception', 16],
-                ['Custom value', 14], ['Policy SLA (days)', 12], ['Reason', 44], ['Approved by', 18], ['Updated', 13], ['Current status', 15]];
-  ws.columns = cols.map(([header, width]) => ({ header, width }));
-  styleHeader(ws.getRow(1));
   const byKey = new Map(all.map(r => [r.key, r]));
-  for (const [key, e] of Object.entries(state.exceptions)) {
-    const r = byKey.get(key);
-    const [asset, category, setting] = key.split('|');
-    const row = ws.addRow([r ? r.asset : asset, r?.network ?? '', r?.severity ?? '', r ? r.category : category, r ? r.setting : setting,
-      EXC_LABEL[e.type], e.type === 'days' ? `${e.days} days` : e.type === 'date' ? xlDate(e.date) : '—',
-      r?.policyDays ?? '', e.reason, e.by || '', xlDate(e.updated), r ? STATUS[r.status].label : 'Not in current sheet']);
-    row.getCell(7).numFmt = 'dd-mmm-yyyy'; row.getCell(11).numFmt = 'dd-mmm-yyyy';
-    [5, 9].forEach(i => row.getCell(i).alignment = { wrapText: true, vertical: 'top' });
-    if (r) styleStatus(row.getCell(12), r.status);
-  }
-  ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: cols.length } };
+  const rows = Object.entries(state.exceptions).map(([key, e]) => {
+    const r = byKey.get(key), [asset, category, setting] = key.split('|');
+    return { asset: r ? r.asset : asset, network: r?.network ?? '', severity: r?.severity ?? '', category: r ? r.category : category,
+      setting: r ? r.setting : setting, type: EXC_LABEL[e.type], custom: e.type === 'days' ? `${e.days} days` : e.type === 'date' ? e.date : '—',
+      policy: r?.policyDays ?? '', reason: e.reason, by: e.by || '', updated: e.updated, status: r ? STATUS[r.status].label : 'Not in current sheet' };
+  });
+  addDataSheet(wb, 'Exceptions', EXCEPTION_COLS, rows);
 }
 
 function addPolicySheet(wb) {
@@ -1522,24 +1706,26 @@ function addPolicySheet(wb) {
   const s = state.settings;
   let r = addTable(ws, 1, 'SLA policy (days to remediate)', ['Network', 'High / Critical', 'Medium / Low'],
     [['DMZ', s.sla.DMZ.HC, s.sla.DMZ.ML], ['DRN', s.sla.DRN.HC, s.sla.DRN.ML],
-     ['"-" / Unknown Status in QIP', `= ${s.otherNetwork}`, `= ${s.otherNetwork}`]]);
+     ['"-" / Unknown Status in QIP', `= ${s.otherNetwork}`, `= ${s.otherNetwork}`],
+     ['Any network, severity "-"', 'No SLA', 'No SLA']]);
   const notes = [
     'A finding is Compliant when its Last Compliant Date is on or after its Last Scanned Date.',
     'Otherwise the SLA clock starts at the Last Compliant Date, or the First Detected date when that is later.',
     'Never-compliant findings start at the earliest of: First Detected, the date this tracker first saw them failing, or the Last Scanned Date.',
     `"Due soon" = ${s.dueSoon} days or fewer remaining. Scans older than ${s.staleDays} days are flagged stale.`,
-    'Unrecognised severities are treated as High/Critical.',
+    'Severity "-" has no SLA: non-compliant findings show "No SLA" and never breach (unless given a custom due date or SLA days). Other unrecognised severities are treated as High/Critical.',
     'Exceptions (custom SLA days, custom due date, or risk accepted) override the policy for that finding.',
   ];
   notes.forEach((n, i) => Object.assign(ws.getCell(r + i, 1), { value: '• ' + n, font: { size: 10, color: { argb: XL.muted } } }));
 }
 
-async function buildReportWorkbook() {
+const DEFAULT_REPORT_NAME = 'Compliance SLA Report';
+async function buildReportWorkbook(title = DEFAULT_REPORT_NAME) {
   const all = evaluated(), agg = aggregate(all);
   const wb = new ExcelJS.Workbook();
-  wb.creator = 'Compliance SLA Tracker'; wb.created = new Date();
-  addDashboardSheet(wb, all, agg);
-  addSummarySheet(wb, all, agg);
+  wb.creator = 'Compliance SLA Tracker'; wb.created = new Date(); wb.title = title;
+  addDashboardSheet(wb, all, agg, title);
+  addSummarySheet(wb, all, agg, title);
   if (state.snapshots.length) addTrendSheet(wb);
   addFindingsSheet(wb, 'All Findings', all.slice().sort((a, b) => cmp(a, b, 'status') || cmp(a, b, 'id')));
   addFindingsSheet(wb, 'SLA Breached', all.filter(r => r.status === 'bad').sort((a, b) => a.remaining - b.remaining), 'FFB42318');
@@ -1547,24 +1733,50 @@ async function buildReportWorkbook() {
   addPolicySheet(wb);
   return wb;
 }
-async function downloadWorkbook(wb, name) {
-  const buf = await wb.xlsx.writeBuffer();
-  const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+async function downloadWorkbook(wb, name, onProgress) {
+  const parts = await writeWorkbook(wb, onProgress);
+  const blob = new Blob(parts, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob); a.download = name;
   document.body.appendChild(a); a.click();
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
 }
+const reportTitle = () => $('reportName').value.trim().replace(/\s+/g, ' ') || DEFAULT_REPORT_NAME;
+const reportFileName = title => `${title.replace(/[\\/:*?"<>|]+/g, '').trim() || DEFAULT_REPORT_NAME} - ${todayStr()}.xlsx`;
+function openReportDialog() {
+  $('reportNames').innerHTML = state.reportNames.map(n => `<option value="${esc(n)}">`).join('');
+  $('reportName').value = state.reportNames[0] || '';
+  $('reportFile').textContent = 'File: ' + reportFileName(reportTitle());
+  $('reportDlg').showModal();
+  $('reportName').select();
+}
 async function downloadReport() {
-  const btn = $('btnReport'); btn.disabled = true; btn.textContent = 'Building report…';
-  try { await downloadWorkbook(await buildReportWorkbook(), `compliance-sla-report-${todayStr()}.xlsx`); }
-  catch (e) { console.error(e); toast('Report failed: ' + e.message); }
-  finally { btn.disabled = false; btn.textContent = 'Download report (.xlsx)'; }
+  const title = reportTitle();
+  $('reportDlg').close();
+  state.reportNames = [title, ...state.reportNames.filter(n => n !== title)].slice(0, 8);
+  save();
+  await withBusy($('btnReport'), 'Download report (.xlsx)', 'Building report', async progress => {
+    progress(0);
+    await tick(); // paint the busy state before the heavy work starts
+    await downloadWorkbook(await buildReportWorkbook(title), reportFileName(title), progress);
+  });
 }
 async function exportView() {
-  const wb = new ExcelJS.Workbook();
-  addFindingsSheet(wb, 'Filtered Findings', sortRows(filtered(evaluated())));
-  await downloadWorkbook(wb, `compliance-findings-${todayStr()}.xlsx`);
+  await withBusy($('btnExport'), 'Export view (.xlsx)', 'Exporting', async progress => {
+    await tick();
+    const wb = new ExcelJS.Workbook();
+    addFindingsSheet(wb, 'Filtered Findings', sortRows(filtered(evaluated())));
+    await downloadWorkbook(wb, `compliance-findings-${todayStr()}.xlsx`, progress);
+  });
+}
+// Disables a button and shows progress while an export runs; reports failures instead of leaving the page stuck
+async function withBusy(btn, label, busyLabel, fn) {
+  if (btn.disabled) return;
+  btn.disabled = true;
+  const progress = f => { btn.textContent = `${busyLabel}… ${Math.round(f * 100)}%`; };
+  try { await fn(progress); }
+  catch (e) { console.error(e); toast(`${busyLabel} failed: ${e.message || e}. Try a filtered export or a smaller file.`); }
+  finally { btn.disabled = false; btn.textContent = label; }
 }
 
 // ---------- UI wiring ----------
@@ -1581,7 +1793,11 @@ function resetFilters(rerender = true) {
 
 $('btnUpload').onclick = () => $('file').click();
 $('file').onchange = e => { const f = e.target.files[0]; if (f) importFile(f); e.target.value = ''; };
-$('btnReport').onclick = downloadReport;
+$('btnReport').onclick = openReportDialog;
+$('reportGo').onclick = downloadReport;
+$('reportCancel').onclick = () => $('reportDlg').close();
+$('reportName').addEventListener('input', () => $('reportFile').textContent = 'File: ' + reportFileName(reportTitle()));
+$('reportName').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); downloadReport(); } });
 $('btnClear').onclick = () => {
   if (!confirm('Remove the loaded sheet from this browser? (SLA settings and exceptions are kept.)')) return;
   state.rows = []; state.fileName = ''; state.loadedAt = null; view.selected.clear(); save(); render();
