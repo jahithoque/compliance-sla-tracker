@@ -30,6 +30,11 @@ all `-`/blank stay visible in the app but are left out of exported reports.
   First Detected, the date the tracker first saw them failing, or Last Scanned Date.
 - **Exceptions**: custom SLA days, custom due date, or risk accepted — per finding or in bulk, with reason and approver.
 
+## Skipped rows
+
+Rows containing `ENS Dat Date Flag Check` in any cell are dropped at import. Edit the list under
+**SLA settings → Skip rows** (one phrase per line, case-insensitive).
+
 ## Back up
 
 Exceptions, first-seen dates and trend history live only in the browser. Use

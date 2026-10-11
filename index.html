@@ -317,6 +317,10 @@
     <select id="otherNet"><option value="DMZ">DMZ rules (stricter)</option><option value="DRN">DRN rules</option></select></div>
   <div class="field"><label for="dueSoon">"Due soon" warning — days before deadline</label><input type="number" min="0" id="dueSoon"></div>
   <div class="field"><label for="staleDays">Flag scan as stale after — days</label><input type="number" min="0" id="staleDays"></div>
+  <h4>Skip rows</h4>
+  <p class="help" style="margin-bottom:6px">Rows with any cell containing one of these phrases are dropped when a file is imported
+    (one phrase per line; case and extra spaces are ignored). Saving also removes matching findings from the current data.</p>
+  <textarea id="excludePhrases" rows="3" style="width:100%"></textarea>
   <h4>Backup</h4>
   <p class="help" id="excCount" style="margin-bottom:8px"></p>
   <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -377,6 +381,7 @@ const DEFAULT_SETTINGS = {
   sla: { DMZ: { HC: 60, ML: 120 }, DRN: { HC: 110, ML: 180 } },
   otherNetwork: 'DMZ', // rules used for "-" and "Unknown Status in QIP"
   dueSoon: 7, staleDays: 30,
+  excludePhrases: ['ENS Dat Date Flag Check'], // rows containing any of these are dropped at import
 };
 const GROUP_LABEL = { HC: 'High/Critical', ML: 'Medium/Low', NA: 'No severity (-)' };
 const STORE_KEY = 'complianceTracker.v1';
@@ -416,6 +421,7 @@ function mergeSettings(s = {}) {
     sla: { DMZ: { ...d.sla.DMZ, ...s.sla?.DMZ }, DRN: { ...d.sla.DRN, ...s.sla?.DRN } },
     otherNetwork: s.otherNetwork === 'DRN' ? 'DRN' : 'DMZ',
     dueSoon: s.dueSoon ?? d.dueSoon, staleDays: s.staleDays ?? d.staleDays,
+    excludePhrases: Array.isArray(s.excludePhrases) ? s.excludePhrases : d.excludePhrases.slice(),
   };
 }
 // Persistence: IndexedDB (large raw reports exceed localStorage's ~5MB), localStorage as fallback
@@ -436,16 +442,20 @@ async function idbDo(mode, fn) {
     tx.onerror = tx.onabort = () => { db.close(); reject(tx.error); };
   });
 }
-let saveChain = Promise.resolve();
+let saveChain = Promise.resolve(), pendingSaves = 0;
 function save() {
   const snapshot = JSON.parse(JSON.stringify(state));
+  pendingSaves++;
   saveChain = saveChain.then(() => idbDo('readwrite', s => s.put(snapshot, 'state')))
     .catch(() => {
       try { localStorage.setItem(STORE_KEY, JSON.stringify(snapshot)); }
       catch (e) { toast('Could not save in this browser — changes will be lost on refresh. Use SLA settings → Back up.'); }
-    });
+    })
+    .finally(() => pendingSaves--);
   return saveChain;
 }
+// Saving is asynchronous; warn before the tab closes or reloads mid-save so the last change isn't lost
+window.addEventListener('beforeunload', e => { if (pendingSaves > 0) { e.preventDefault(); e.returnValue = ''; } });
 async function load() {
   let s = null;
   try { s = await idbDo('readonly', st => st.get('state')); } catch (e) { /* fall back below */ }
@@ -604,14 +614,24 @@ function normNetwork(v) {
 }
 const isBlankDate = v => v === '' || v == null || /^(-+|n\/?a|none|never|null|unknown)$/i.test(String(v).trim());
 
-function buildRows(aoa, hr, map) {
+// One case-insensitive regex for all exclusion phrases; spaces match any run of whitespace
+function exclusionRegex(phrases = state.settings.excludePhrases) {
+  const parts = phrases.map(p => p.trim()).filter(Boolean)
+    .map(p => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+'));
+  return parts.length ? new RegExp(parts.join('|'), 'i') : null;
+}
+const rowExcluded = (cells, re) => re && cells.some(c => typeof c === 'string' && re.test(c));
+
+function buildRows(aoa, hr, map, exclude = exclusionRegex()) {
   // Raw exports can contain control characters that are illegal in .xlsx XML; drop them on the way in
   const get = (r, f) => { const v = map[f] === undefined ? '' : r[map[f]]; return typeof v === 'string' ? v.replace(XML_BAD, '') : v; };
   const str = (r, f) => { const v = get(r, f); return String(v instanceof Date ? ymd(v) : v ?? '').trim(); };
   const rows = [];
+  let skipped = 0;
   for (let i = hr + 1; i < aoa.length; i++) {
     const r = aoa[i] || [];
     if (!FIELDS.some(f => map[f.key] !== undefined && str(r, f.key) !== '')) continue; // blank / footer rows
+    if (rowExcluded(r, exclude)) { skipped++; continue; } // checked on every cell, mapped or not
     rows.push({
       id: str(r, 'id') || String(rows.length + 1),
       asset: str(r, 'asset'),
@@ -624,6 +644,7 @@ function buildRows(aoa, hr, map) {
       firstDetected: parseDate(get(r, 'firstDetected')),
     });
   }
+  rows.skipped = skipped;
   return rows;
 }
 const asOfDate = rows => rows.reduce((m, r) => r.lastScanned && r.lastScanned > m ? r.lastScanned : m, '') || todayStr();
@@ -709,6 +730,7 @@ function updateMapPreview() {
     if (oddNet.length) warns.push(['warn', `Network values not recognised: ${oddNet.slice(0, 6).map(esc).join(', ')}${oddNet.length > 6 ? '…' : ''} — these use the "${state.settings.otherNetwork}" fallback SLA.`]);
     const oddSev = odd('severity', ['Critical', 'High', 'Medium', 'Low', '-']);
     if (oddSev.length) warns.push(['warn', `Severity values not recognised: ${oddSev.slice(0, 6).map(esc).join(', ')} — treated as High/Critical.`]);
+    if (rows.skipped) warns.push(['info', `${rows.skipped.toLocaleString()} row(s) skipped by the "Skip rows" rule (e.g. ${state.settings.excludePhrases.filter(Boolean).map(p => `"${esc(p.trim())}"`).slice(0, 2).join(', ')}) — not imported.`]);
     if (map.id === undefined) warns.push(['info', 'No # column mapped — findings will be numbered in file order.']);
     if (map.firstDetected === undefined) warns.push(['info', 'No First Detected column — never-compliant findings will use the earliest date this tracker has seen them failing.']);
     const asOf = asOfDate(rows), latest = latestSnapshot();
@@ -1945,6 +1967,7 @@ $('excDate').addEventListener('focus', () => document.querySelector('input[name=
 function fillSettingsForm(s) {
   for (const n of ['DMZ', 'DRN']) for (const g of ['HC', 'ML']) $(`sla_${n}_${g}`).value = s.sla[n][g];
   $('otherNet').value = s.otherNetwork; $('dueSoon').value = s.dueSoon; $('staleDays').value = s.staleDays;
+  $('excludePhrases').value = s.excludePhrases.join('\n');
   $('excCount').textContent = `Saved in this browser: ${Object.keys(state.exceptions).length} exception(s), ${Object.keys(state.firstSeen).length} first-seen date(s), ` +
     `${state.snapshots.length} trend snapshot(s). Back up regularly — clearing browser data erases them. The uploaded sheet itself is not included.`;
 }
@@ -1956,8 +1979,15 @@ $('setSave').onclick = () => {
   state.settings = {
     sla: { DMZ: { HC: n('sla_DMZ_HC'), ML: n('sla_DMZ_ML') }, DRN: { HC: n('sla_DRN_HC'), ML: n('sla_DRN_ML') } },
     otherNetwork: $('otherNet').value, dueSoon: n('dueSoon'), staleDays: n('staleDays'),
+    excludePhrases: [...new Set($('excludePhrases').value.split('\n').map(p => p.trim()).filter(Boolean))],
   };
-  save(); $('settings').close(); render(); toast('SLA settings saved.');
+  // Apply the skip rule to data already loaded (only the stored columns can be checked)
+  const re = exclusionRegex(), before = state.rows.length;
+  if (re) state.rows = state.rows.filter(r => !rowExcluded([r.id, r.asset, r.network, r.severity, r.category, r.setting], re));
+  const removed = before - state.rows.length;
+  if (removed) view.selected.clear();
+  save(); $('settings').close(); render();
+  toast('SLA settings saved.' + (removed ? ` ${removed.toLocaleString()} finding(s) matching "Skip rows" removed from the current data.` : ''));
 };
 $('excBackup').onclick = () => {
   const { exceptions, firstSeen, snapshots, lastOpen, mapMemory, settings } = state;
