@@ -1,0 +1,1734 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Compliance SLA Tracker</title>
+<script src="lib/xlsx.full.min.js"></script>
+<script src="lib/exceljs.min.js"></script>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1b1f24; --muted: #5d6673; --border: #dde1e6;
+    --accent: #2457c5; --accent-weak: #e8eefb;
+    --ok: #1f7a4a; --ok-bg: #e3f4ea;
+    --warn: #9a6200; --warn-bg: #fdf0d5;
+    --bad: #b42318; --bad-bg: #fde7e5;
+    --acc: #5b45c4; --acc-bg: #ede9fb;
+    --neutral: #4b5563; --neutral-bg: #eceff2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151a; --panel: #1b2027; --text: #e6e9ee; --muted: #9aa4b2; --border: #2d343e;
+      --accent: #7ea2f0; --accent-weak: #1f2a40;
+      --ok: #6fd39b; --ok-bg: #173226;
+      --warn: #f0c060; --warn-bg: #3a2e14;
+      --bad: #ff8a80; --bad-bg: #3d1c1a;
+      --acc: #b3a6f5; --acc-bg: #2a2445;
+      --neutral: #b8c0cc; --neutral-bg: #262c35;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 "Segoe UI", system-ui, -apple-system, sans-serif; }
+  header { background: var(--panel); border-bottom: 1px solid var(--border); padding: 14px 24px;
+           display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; }
+  header .meta { color: var(--muted); font-size: 12px; flex: 1; min-width: 200px; }
+  main { padding: 20px 24px 40px; max-width: 1500px; margin: 0 auto; }
+  button, .btn { font: inherit; border: 1px solid var(--border); background: var(--panel); color: var(--text);
+                 padding: 7px 12px; border-radius: 6px; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  @media (prefers-color-scheme: dark) { button.primary { color: #0d1320; } }
+  button.danger { color: var(--bad); }
+  button.icon { padding: 2px 8px; font-size: 13px; }
+  input, select, textarea { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--border);
+                            border-radius: 6px; padding: 6px 8px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .hidden { display: none !important; }
+
+  #drop { border: 2px dashed var(--border); border-radius: 10px; padding: 48px 20px; text-align: center;
+          background: var(--panel); transition: border-color .15s, background .15s; }
+  #drop.over { border-color: var(--accent); background: var(--accent-weak); }
+  #drop h2 { margin: 0 0 6px; font-size: 18px; }
+  #drop p { color: var(--muted); margin: 4px 0 16px; }
+  .cols { color: var(--muted); font-size: 12px; margin-top: 18px; }
+  .cols code { background: var(--neutral-bg); padding: 1px 5px; border-radius: 4px; }
+
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .kpi { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;
+         cursor: pointer; border-left-width: 4px; }
+  .kpi:hover { border-color: var(--accent); }
+  .kpi.active { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .kpi .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .kpi .value { font-size: 26px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .kpi .sub { color: var(--muted); font-size: 12px; }
+  .kpi.k-total { border-left-color: var(--accent); }
+  .kpi.k-ok { border-left-color: var(--ok); }
+  .kpi.k-within { border-left-color: var(--neutral); }
+  .kpi.k-soon { border-left-color: var(--warn); }
+  .kpi.k-bad { border-left-color: var(--bad); }
+  .kpi.k-acc { border-left-color: var(--acc); }
+  .kpi.k-stale { border-left-color: var(--muted); }
+
+  .policy { color: var(--muted); font-size: 12px; margin: -6px 0 14px; }
+  .policy b { color: var(--text); font-weight: 600; }
+
+  .breakdowns { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .breakdowns h3 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .brow { display: grid; grid-template-columns: 150px 1fr 60px; gap: 10px; align-items: center; margin: 7px 0;
+          cursor: pointer; border-radius: 4px; }
+  .brow:hover .bname { color: var(--accent); }
+  .bname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar { display: flex; height: 14px; border-radius: 3px; overflow: hidden; background: var(--neutral-bg); }
+  .bar span { display: block; height: 100%; }
+  .bar .s-ok { background: var(--ok); } .bar .s-within { background: var(--neutral); }
+  .bar .s-soon { background: var(--warn); } .bar .s-bad { background: var(--bad); }
+  .bar .s-acc { background: var(--acc); } .bar .s-unk { background: var(--border); }
+  .bnum { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+  .toolbar input[type=search] { min-width: 220px; flex: 1; }
+  .toolbar .count { color: var(--muted); margin-left: auto; }
+
+  .tablewrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
+  .tablewrap table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  .tablewrap th, .tablewrap td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+  .tablewrap td.wrap { white-space: normal; min-width: 220px; max-width: 420px; }
+  .tablewrap th { position: sticky; top: 0; background: var(--panel); user-select: none; font-weight: 600; }
+  .tablewrap th[data-sort] { cursor: pointer; }
+  .tablewrap th[data-sort]:hover { color: var(--accent); }
+  th .arrow { color: var(--accent); font-size: 10px; margin-left: 3px; }
+  .tablewrap tbody tr:hover { background: var(--accent-weak); }
+  .tablewrap tbody tr.sel { background: var(--accent-weak); }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .p-ok { color: var(--ok); background: var(--ok-bg); }
+  .p-within { color: var(--neutral); background: var(--neutral-bg); }
+  .p-soon { color: var(--warn); background: var(--warn-bg); }
+  .p-bad { color: var(--bad); background: var(--bad-bg); }
+  .p-acc { color: var(--acc); background: var(--acc-bg); }
+  .p-unk { color: var(--muted); background: var(--neutral-bg); }
+  .sev-Critical, .sev-High { color: var(--bad); font-weight: 600; }
+  .sev-Medium { color: var(--warn); font-weight: 600; }
+  .sev-Low { color: var(--neutral); }
+  .stale { color: var(--warn); font-size: 11px; margin-left: 4px; }
+  .exc { color: var(--acc); font-weight: 600; cursor: help; }
+  .pager { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-top: 10px; color: var(--muted); }
+
+  dialog { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); color: var(--text);
+           padding: 20px; width: min(520px, 94vw); }
+  dialog::backdrop { background: rgba(0,0,0,.4); }
+  dialog h2 { margin: 0 0 4px; font-size: 17px; }
+  dialog h4 { margin: 18px 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  dialog p.help { color: var(--muted); font-size: 12px; margin: 0 0 14px; }
+  .field { display: grid; grid-template-columns: 1fr 160px; gap: 10px; align-items: center; margin: 8px 0; }
+  .field input, .field select { width: 100%; }
+  .matrix { border-collapse: collapse; width: 100%; }
+  .matrix th, .matrix td { padding: 6px; text-align: left; font-size: 13px; }
+  .matrix input { width: 100%; }
+  .radios label { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+  .radios input[type=number], .radios input[type=date] { width: 150px; margin-left: auto; }
+  .stack label { display: block; margin: 10px 0 4px; font-size: 13px; }
+  .stack textarea, .stack input { width: 100%; }
+  .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; flex-wrap: wrap; }
+  .actions .left { margin-right: auto; }
+  .tabs { display: flex; gap: 4px; padding: 0 24px; background: var(--panel); border-bottom: 1px solid var(--border); }
+  .tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 10px 14px; color: var(--muted); background: none; }
+  .tabs button.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+
+  #mapDlg { width: min(940px, 96vw); }
+  .mapopts { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin-bottom: 12px; font-size: 13px; }
+  .mapopts input[type=number] { width: 70px; }
+  .maptable { border-collapse: collapse; width: 100%; font-size: 13px; }
+  .maptable th, .maptable td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+  .maptable select { width: 100%; }
+  .maptable .fhint { color: var(--muted); font-size: 11px; }
+  .maptable .samples { color: var(--muted); font-size: 12px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+  .maptable .samples b { color: var(--bad); font-weight: 600; }
+  .req { color: var(--bad); }
+  .warns { margin: 12px 0 0; padding: 0; list-style: none; font-size: 12px; }
+  .warns li { padding: 6px 10px; border-radius: 6px; margin: 4px 0; background: var(--warn-bg); color: var(--warn); }
+  .warns li.err { background: var(--bad-bg); color: var(--bad); }
+  .warns li.info { background: var(--accent-weak); color: var(--text); }
+
+  .tchart { display: flex; align-items: flex-end; gap: 10px; height: 250px; padding: 8px 4px 0; overflow-x: auto; }
+  .tcol { flex: 1 0 48px; max-width: 96px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }
+  .tpct { font-size: 12px; font-weight: 600; color: var(--ok); margin-bottom: 4px; }
+  .tstack { width: 64%; display: flex; flex-direction: column-reverse; border-radius: 3px 3px 0 0; overflow: hidden; }
+  .tstack span { display: block; }
+  .tnum { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+  .tdate { font-size: 11px; color: var(--muted); border-top: 1px solid var(--border); width: 100%; text-align: center; padding-top: 4px; margin-top: 2px; white-space: nowrap; }
+  .tstack .s-ok { background: var(--ok); } .tstack .s-within { background: var(--neutral); }
+  .tstack .s-soon { background: var(--warn); } .tstack .s-bad { background: var(--bad); } .tstack .s-acc { background: var(--acc); }
+  .delta-up { color: var(--bad); } .delta-down { color: var(--ok); }
+
+  #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg);
+           padding: 10px 16px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none;
+           max-width: 90vw; z-index: 10; }
+  #toast.show { opacity: 1; }
+  @media (max-width: 640px) {
+    header, main { padding-left: 16px; padding-right: 16px; }
+    .brow { grid-template-columns: 100px 1fr 44px; }
+    .field { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Compliance SLA Tracker</h1>
+  <span class="meta" id="meta"></span>
+  <button id="btnUpload">Upload sheet</button>
+  <button id="btnReport" class="primary hidden">Download report (.xlsx)</button>
+  <button id="btnSettings">SLA settings</button>
+  <button id="btnClear" class="danger hidden">Clear data</button>
+  <input type="file" id="file" accept=".xlsx,.xls,.xlsm,.csv" class="hidden">
+</header>
+<nav class="tabs hidden" id="tabs">
+  <button data-tab="dash" class="active">Dashboard</button>
+  <button data-tab="trend">Trends</button>
+</nav>
+
+<main>
+  <section id="empty">
+    <div id="drop">
+      <h2>Drop your compliance sheet here</h2>
+      <p>Excel (.xlsx, .xls) or CSV. Data stays in this browser and is never uploaded anywhere.</p>
+      <button class="primary" onclick="document.getElementById('file').click()">Choose file</button>
+      <div class="cols">Raw reports are fine — you'll map the columns after choosing the file. Used columns:
+        <code>#</code> <code>Asset</code> <code>Network</code> <code>Severity</code> <code>Test Category</code>
+        <code>Setting</code> <code>Last Scanned Date</code> <code>Last Compliant Date</code> <code>First Detected</code>
+      </div>
+    </div>
+  </section>
+
+  <section id="dash" class="hidden">
+    <div class="kpis" id="kpis"></div>
+    <div class="policy" id="policy"></div>
+    <div class="breakdowns">
+      <div class="panel"><h3>By severity</h3><div id="bySeverity"></div></div>
+      <div class="panel"><h3>By network</h3><div id="byNetwork"></div></div>
+      <div class="panel"><h3>By test category (top 8)</h3><div id="byCategory"></div></div>
+      <div class="panel"><h3>Top 10 issues (open findings by setting)</h3><div id="topIssues"></div></div>
+      <div class="panel"><h3>Top 10 assets (open findings)</h3><div id="topAssets"></div></div>
+    </div>
+    <div class="legend" style="margin:-6px 0 16px">
+      <span><i style="background:var(--ok)"></i>Compliant</span>
+      <span><i style="background:var(--neutral)"></i>Within SLA</span>
+      <span><i style="background:var(--warn)"></i>Due soon</span>
+      <span><i style="background:var(--bad)"></i>SLA breached</span>
+      <span><i style="background:var(--acc)"></i>Risk accepted</span>
+      <span><i style="background:var(--border)"></i>No dates</span>
+    </div>
+
+    <div class="toolbar">
+      <input type="search" id="q" placeholder="Search asset, setting, category, #…">
+      <select id="fStatus"></select>
+      <select id="fSeverity"></select>
+      <select id="fNetwork"></select>
+      <select id="fCategory"></select>
+      <label style="color:var(--muted)"><input type="checkbox" id="fStale"> Stale scans only</label>
+      <button id="btnReset">Reset filters</button>
+      <button id="btnExport">Export view (.xlsx)</button>
+    </div>
+    <div class="toolbar">
+      <button id="btnBulkExc" disabled>Set SLA exception for selected</button>
+      <button id="btnClearSel" class="hidden">Clear selection</button>
+      <span class="count" id="count"></span>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr id="thead"></tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+    <div class="pager">
+      <span id="pageInfo"></span>
+      <button id="prev">‹ Prev</button>
+      <button id="next">Next ›</button>
+      <select id="pageSize"><option>25</option><option selected>50</option><option>100</option><option>250</option></select>
+    </div>
+  </section>
+
+  <section id="trend" class="hidden">
+    <div class="panel">
+      <h3 style="margin:0 0 4px;font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)">Open issues &amp; compliance over time</h3>
+      <div id="trendChart" class="tchart"></div>
+      <div class="legend">
+        <span><i style="background:var(--bad)"></i>SLA breached</span>
+        <span><i style="background:var(--warn)"></i>Due soon</span>
+        <span><i style="background:var(--neutral)"></i>Within SLA</span>
+        <span><i style="background:var(--acc)"></i>Risk accepted</span>
+        <span style="color:var(--ok);font-weight:600">% = compliance rate</span>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:12px">
+      <p style="color:var(--muted);font-size:12px;margin:0 0 10px">One snapshot per uploaded file, dated by its most recent scan. Figures are calculated
+        at import time with the SLA settings and exceptions in effect then. Upload older reports to backfill history.</p>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>As of</th><th>Source file</th><th class="num">Findings</th><th class="num">Compliance</th><th class="num">Open</th>
+            <th class="num">Breached</th><th class="num">Due soon</th><th class="num">Risk accepted</th><th class="num">New open</th><th class="num">Resolved</th><th></th></tr></thead>
+          <tbody id="trendBody"></tbody>
+        </table>
+      </div>
+      <div class="actions"><button id="btnClearHist" class="danger">Clear trend history</button></div>
+    </div>
+  </section>
+</main>
+
+<dialog id="mapDlg">
+  <h2>Map columns</h2>
+  <p class="help" id="mapFile"></p>
+  <div class="mapopts">
+    <label>Sheet <select id="mapSheet"></select></label>
+    <label>Header row <input type="number" min="1" id="mapHeaderRow"></label>
+    <span id="mapStats" style="color:var(--muted)"></span>
+  </div>
+  <table class="maptable">
+    <thead><tr><th style="width:26%">Tracker column</th><th style="width:30%">Column in your file</th><th>Sample values</th></tr></thead>
+    <tbody id="mapBody"></tbody>
+  </table>
+  <ul class="warns" id="mapWarn"></ul>
+  <label style="display:flex;gap:8px;align-items:center;margin-top:12px;font-size:13px">
+    <input type="checkbox" id="mapCurrent" checked> Make this the current data
+    <span style="color:var(--muted)">(untick to only add it to trend history and first-detected tracking)</span>
+  </label>
+  <div class="actions">
+    <button id="mapCancel">Cancel</button>
+    <button id="mapImport" class="primary">Import</button>
+  </div>
+</dialog>
+
+<dialog id="settings">
+  <h2>SLA settings</h2>
+  <p class="help">Days to remediate, counted from the Last Compliant Date
+    (or the Last Scanned Date if the item has never been compliant).</p>
+  <table class="matrix">
+    <tr><th>Network</th><th>High / Critical</th><th>Medium / Low</th></tr>
+    <tr><th>DMZ</th><td><input type="number" min="0" id="sla_DMZ_HC"></td><td><input type="number" min="0" id="sla_DMZ_ML"></td></tr>
+    <tr><th>DRN</th><td><input type="number" min="0" id="sla_DRN_HC"></td><td><input type="number" min="0" id="sla_DRN_ML"></td></tr>
+  </table>
+  <div class="field"><label for="otherNet">Network "-" / "Unknown Status in QIP" uses</label>
+    <select id="otherNet"><option value="DMZ">DMZ rules (stricter)</option><option value="DRN">DRN rules</option></select></div>
+  <div class="field"><label for="dueSoon">"Due soon" warning — days before deadline</label><input type="number" min="0" id="dueSoon"></div>
+  <div class="field"><label for="staleDays">Flag scan as stale after — days</label><input type="number" min="0" id="staleDays"></div>
+  <h4>Backup</h4>
+  <p class="help" id="excCount" style="margin-bottom:8px"></p>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <button id="excBackup">Back up tracker data (.json)</button>
+    <button id="excRestore">Restore from backup (.json)</button>
+    <input type="file" id="excFile" accept=".json,application/json" class="hidden">
+  </div>
+  <div class="actions">
+    <button id="setReset" class="left">Restore defaults</button>
+    <button id="setCancel">Cancel</button>
+    <button id="setSave" class="primary">Save</button>
+  </div>
+</dialog>
+
+<dialog id="excDlg">
+  <h2 id="excTitle">SLA exception</h2>
+  <p class="help" id="excInfo"></p>
+  <div class="radios">
+    <label><input type="radio" name="excType" value="policy" checked> Use standard SLA policy</label>
+    <label><input type="radio" name="excType" value="days"> Custom SLA (days) <input type="number" min="0" id="excDays"></label>
+    <label><input type="radio" name="excType" value="date"> Custom due date <input type="date" id="excDate"></label>
+    <label><input type="radio" name="excType" value="accepted"> Risk accepted (no SLA deadline)</label>
+  </div>
+  <div class="stack">
+    <label for="excReason">Reason / justification <span style="color:var(--muted)">(required for exceptions)</span></label>
+    <textarea id="excReason" rows="3"></textarea>
+    <label for="excBy">Approved by</label>
+    <input id="excBy">
+  </div>
+  <div class="actions">
+    <button id="excCancel">Cancel</button>
+    <button id="excSave" class="primary">Save</button>
+  </div>
+</dialog>
+
+<div id="toast"></div>
+
+<script>
+'use strict';
+
+// ---------- Config & state ----------
+const DEFAULT_SETTINGS = {
+  sla: { DMZ: { HC: 60, ML: 120 }, DRN: { HC: 110, ML: 180 } },
+  otherNetwork: 'DMZ', // rules used for "-" and "Unknown Status in QIP"
+  dueSoon: 7, staleDays: 30,
+};
+const GROUP_LABEL = { HC: 'High/Critical', ML: 'Medium/Low' };
+const STORE_KEY = 'complianceTracker.v1';
+const STATUS = {
+  ok:       { label: 'Compliant',     cls: 'p-ok',     bar: 's-ok' },
+  within:   { label: 'Within SLA',    cls: 'p-within', bar: 's-within' },
+  soon:     { label: 'Due soon',      cls: 'p-soon',   bar: 's-soon' },
+  bad:      { label: 'SLA breached',  cls: 'p-bad',    bar: 's-bad' },
+  accepted: { label: 'Risk accepted', cls: 'p-acc',    bar: 's-acc' },
+  unk:      { label: 'No dates',      cls: 'p-unk',    bar: 's-unk' },
+};
+const BAR_KEYS = ['ok', 'within', 'soon', 'bad', 'accepted', 'unk'];
+const OPEN_KEYS = ['bad', 'soon', 'within', 'accepted'];
+const isOpen = s => OPEN_KEYS.includes(s);
+const SEV_ORDER = { Critical: 0, High: 1, Medium: 2, Low: 3 };
+const STATUS_ORDER = { bad: 0, soon: 1, within: 2, accepted: 3, unk: 4, ok: 5 };
+const EXC_LABEL = { days: 'Custom SLA days', date: 'Custom due date', accepted: 'Risk accepted' };
+
+let state = {
+  rows: [], fileName: '', loadedAt: null, settings: mergeSettings(),
+  exceptions: {},  // itemKey → { type, days?, date?, reason, by, updated }
+  firstSeen: {},   // itemKey → earliest date seen failing (never-compliant findings only)
+  snapshots: [],   // one per imported file, sorted by asOf
+  lastOpen: null,  // { asOf, keys: [hash] } open findings of the newest snapshot, for new/resolved counts
+  mapMemory: {},   // normalized source header → tracker field, from previous confirmed mappings
+};
+let view = { sort: { key: 'status', dir: 1 }, page: 0, pageSize: 50, kpi: '', selected: new Set(), lastFiltered: [], tab: 'dash' };
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+function mergeSettings(s = {}) {
+  const d = DEFAULT_SETTINGS;
+  return {
+    sla: { DMZ: { ...d.sla.DMZ, ...s.sla?.DMZ }, DRN: { ...d.sla.DRN, ...s.sla?.DRN } },
+    otherNetwork: s.otherNetwork === 'DRN' ? 'DRN' : 'DMZ',
+    dueSoon: s.dueSoon ?? d.dueSoon, staleDays: s.staleDays ?? d.staleDays,
+  };
+}
+// Persistence: IndexedDB (large raw reports exceed localStorage's ~5MB), localStorage as fallback
+function idb() {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') return reject(new Error('IndexedDB unavailable'));
+    const req = indexedDB.open('complianceTracker', 1);
+    req.onupgradeneeded = () => req.result.createObjectStore('kv');
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function idbDo(mode, fn) {
+  const db = await idb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('kv', mode), req = fn(tx.objectStore('kv'));
+    tx.oncomplete = () => { db.close(); resolve(req.result); };
+    tx.onerror = tx.onabort = () => { db.close(); reject(tx.error); };
+  });
+}
+let saveChain = Promise.resolve();
+function save() {
+  const snapshot = JSON.parse(JSON.stringify(state));
+  saveChain = saveChain.then(() => idbDo('readwrite', s => s.put(snapshot, 'state')))
+    .catch(() => {
+      try { localStorage.setItem(STORE_KEY, JSON.stringify(snapshot)); }
+      catch (e) { toast('Could not save in this browser — changes will be lost on refresh. Use SLA settings → Back up.'); }
+    });
+  return saveChain;
+}
+async function load() {
+  let s = null;
+  try { s = await idbDo('readonly', st => st.get('state')); } catch (e) { /* fall back below */ }
+  if (!s) { try { const raw = localStorage.getItem(STORE_KEY); if (raw) s = JSON.parse(raw); } catch (e) { /* none */ } }
+  if (!s) return;
+  state = { ...state, ...s, settings: mergeSettings(s.settings), exceptions: s.exceptions || {},
+            firstSeen: s.firstSeen || {}, snapshots: s.snapshots || [], mapMemory: s.mapMemory || {} };
+}
+
+// ---------- Date helpers (all dates stored as YYYY-MM-DD local) ----------
+const pad = n => String(n).padStart(2, '0');
+const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const todayStr = () => ymd(new Date());
+function dayNum(s) { // days since epoch for a YYYY-MM-DD string, timezone-safe
+  const [y, m, d] = s.split('-').map(Number);
+  return Math.round(Date.UTC(y, m - 1, d) / 86400000);
+}
+function addDays(s, n) {
+  const [y, m, d] = s.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d + n));
+  return `${dt.getUTCFullYear()}-${pad(dt.getUTCMonth() + 1)}-${pad(dt.getUTCDate())}`;
+}
+function parseDate(v) {
+  if (v === null || v === undefined || v === '') return null;
+  if (v instanceof Date || Object.prototype.toString.call(v) === '[object Date]') {
+    if (isNaN(v)) return null;
+    // SheetJS dates can land a few seconds off midnight; round to nearest local day
+    return ymd(new Date(v.getTime() + 12 * 3600000));
+  }
+  if (typeof v === 'number') {
+    if (v > 20000 && v < 80000) { // Excel serial date
+      const dt = new Date(Date.UTC(1899, 11, 30) + Math.round(v) * 86400000);
+      return `${dt.getUTCFullYear()}-${pad(dt.getUTCMonth() + 1)}-${pad(dt.getUTCDate())}`;
+    }
+    return null;
+  }
+  const s = String(v).trim();
+  if (!s || /^(-|n\/?a|none|never|null|unknown)$/i.test(s)) return null;
+  let m;
+  if ((m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/))) return `${m[1]}-${pad(m[2])}-${pad(m[3])}`;
+  if ((m = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})/))) { // assume M/D/Y (US)
+    let y = +m[3]; if (y < 100) y += 2000;
+    return `${y}-${pad(m[1])}-${pad(m[2])}`;
+  }
+  // Last resort for text dates like "15 Sep 2026" / "Sep 15, 2026" — the JS parser alone accepts junk like "HOST-123"
+  if (!/\b(19|20)\d{2}\b/.test(s) || !/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i.test(s)) return null;
+  const t = new Date(s.replace(/sept/i, 'Sep'));
+  return isNaN(t) ? null : ymd(t);
+}
+function fmtDate(s) {
+  if (!s) return '—';
+  const [y, m, d] = s.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: '2-digit' });
+}
+
+// ---------- Import: fuzzy column mapping ----------
+const FIELDS = [
+  { key: 'id', label: '#', hint: 'Optional — auto-numbered if missing',
+    aliases: ['#', 'serialnumber', 'serialno', 'serial', 'sn', 'sno', 'no', 'number', 'id', 'rowid', 'findingid'] },
+  { key: 'asset', label: 'Asset', required: true,
+    aliases: ['asset', 'assetname', 'hostname', 'host', 'device', 'devicename', 'computername', 'servername', 'server', 'machine', 'machinename', 'dnsname', 'netbiosname', 'endpoint'] },
+  { key: 'network', label: 'Network', hint: 'DMZ, DRN, -, Unknown Status in QIP',
+    aliases: ['network', 'networkzone', 'zone', 'networksegment', 'segment', 'networktype'] },
+  { key: 'severity', label: 'Severity', required: true, hint: 'Critical, High, Medium, Low',
+    aliases: ['severity', 'sev', 'criticality', 'risk', 'risklevel', 'priority', 'rating', 'severitylevel', 'riskrating'] },
+  { key: 'category', label: 'Test Category',
+    aliases: ['testcategory', 'category', 'checkcategory', 'policycategory', 'controlcategory', 'controlfamily', 'family', 'test'] },
+  { key: 'setting', label: 'Setting',
+    aliases: ['setting', 'settings', 'settingname', 'control', 'controlname', 'check', 'checkname', 'rule', 'rulename', 'testname', 'title', 'finding', 'description'] },
+  { key: 'lastScanned', label: 'Last Scanned Date', required: true, date: true,
+    aliases: ['lastscanneddate', 'lastscanned', 'lastscandate', 'lastscan', 'scanneddate', 'scandate', 'scannedon', 'lastassessed', 'lastchecked', 'checkedon', 'lastcheckedon', 'lastevaluated'] },
+  { key: 'lastCompliant', label: 'Last Compliant Date', required: true, date: true, hint: 'Blank = never compliant',
+    aliases: ['lastcompliantdate', 'lastcompliant', 'compliantdate', 'lastcompliance', 'lastcompliancedate', 'lastpassed', 'lastpass', 'lastpasseddate', 'passedon', 'compliantsince'] },
+  { key: 'firstDetected', label: 'First Detected', date: true, hint: 'Optional — when the failure was first found',
+    aliases: ['firstdetected', 'firstdetecteddate', 'firstdetection', 'firstseen', 'firstfound', 'datedetected', 'detecteddate',
+              'detectiondate', 'firstfailed', 'firstfaileddate', 'datefound', 'discovered', 'discovereddate', 'firstobserved'] },
+];
+const FIELD_BY_KEY = Object.fromEntries(FIELDS.map(f => [f.key, f]));
+const normHeader = h => { const t = String(h ?? '').trim(); return t === '#' ? '#' : t.toLowerCase().replace(/[^a-z0-9]/g, ''); };
+
+function similarity(a, b) { // 1 - normalized Levenshtein distance
+  const m = a.length, n = b.length;
+  if (!m || !n) return 0;
+  let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const cur = [i];
+    for (let j = 1; j <= n; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    prev = cur;
+  }
+  return 1 - prev[n] / Math.max(m, n);
+}
+function headerScore(field, header) {
+  const h = normHeader(header);
+  if (!h) return 0;
+  if (state.mapMemory[h] === field.key) return 1000;
+  let best = 0;
+  for (const a of field.aliases) {
+    if (h === a) return 100;
+    if (a.length >= 4 && h.includes(a)) best = Math.max(best, 50 + a.length);
+    else if (h.length >= 4 && a.includes(h)) best = Math.max(best, 40 + h.length);
+    else if (a.length >= 5) { const r = similarity(h, a); if (r >= 0.8) best = Math.max(best, 30 + Math.round(r * 10)); }
+  }
+  return best;
+}
+// Share of a column's non-blank values that read as dates (null if the column is blank)
+function dateShare(dataRows, i) {
+  let n = 0, d = 0;
+  for (const r of dataRows) {
+    const v = r[i];
+    if (isBlankDate(v)) continue;
+    n++; if (parseDate(v)) d++;
+    if (n >= 50) break;
+  }
+  return n ? d / n : null;
+}
+// Greedy one-to-one assignment, best scores first; a date column never maps to a text field and vice versa
+function autoMap(headers, dataRows = []) {
+  const share = headers.map((_, i) => dateShare(dataRows, i));
+  const fits = (f, i) => share[i] === null || (f.date ? share[i] >= 0.5 : share[i] < 0.5);
+  const cands = [];
+  FIELDS.forEach(f => headers.forEach((h, i) => { const s = headerScore(f, h); if (s >= 40 && (s >= 1000 || fits(f, i))) cands.push([s, f.key, i]); }));
+  cands.sort((a, b) => b[0] - a[0]);
+  const map = {}, used = new Set();
+  for (const [, key, i] of cands) if (!(key in map) && !used.has(i)) { map[key] = i; used.add(i); }
+  return map;
+}
+function headerRowScore(row) {
+  const headers = (row || []).map(c => String(c ?? ''));
+  return FIELDS.filter(f => headers.some(h => headerScore(f, h) >= 50)).length;
+}
+function detectHeaderRow(aoa) { // raw reports often have title rows above the header
+  let best = 0, bestScore = -1;
+  for (let i = 0; i < Math.min(aoa.length, 30); i++) {
+    const s = headerRowScore(aoa[i]);
+    if (s > bestScore) { best = i; bestScore = s; }
+  }
+  return best;
+}
+
+function normSeverity(v) {
+  const s = String(v ?? '').trim().toLowerCase();
+  if (/crit/.test(s)) return 'Critical';
+  if (/high/.test(s)) return 'High';
+  if (/med|moderate/.test(s)) return 'Medium';
+  if (/low|info/.test(s)) return 'Low';
+  return s ? String(v).trim() : 'Unspecified';
+}
+function normNetwork(v) {
+  const s = String(v ?? '').trim();
+  if (!s || /^(-+|n\/?a|none)$/i.test(s)) return '-';
+  if (/unknown/i.test(s)) return 'Unknown Status in QIP';
+  if (/dmz/i.test(s)) return 'DMZ';
+  if (/drn/i.test(s)) return 'DRN';
+  return s;
+}
+const isBlankDate = v => v === '' || v == null || /^(-+|n\/?a|none|never|null|unknown)$/i.test(String(v).trim());
+
+function buildRows(aoa, hr, map) {
+  const get = (r, f) => map[f] === undefined ? '' : r[map[f]];
+  const str = (r, f) => { const v = get(r, f); return String(v instanceof Date ? ymd(v) : v ?? '').trim(); };
+  const rows = [];
+  for (let i = hr + 1; i < aoa.length; i++) {
+    const r = aoa[i] || [];
+    if (!FIELDS.some(f => map[f.key] !== undefined && str(r, f.key) !== '')) continue; // blank / footer rows
+    rows.push({
+      id: str(r, 'id') || String(rows.length + 1),
+      asset: str(r, 'asset'),
+      network: normNetwork(get(r, 'network')),
+      severity: normSeverity(get(r, 'severity')),
+      category: str(r, 'category') || '(none)',
+      setting: str(r, 'setting'),
+      lastScanned: parseDate(get(r, 'lastScanned')),
+      lastCompliant: parseDate(get(r, 'lastCompliant')),
+      firstDetected: parseDate(get(r, 'firstDetected')),
+    });
+  }
+  return rows;
+}
+const asOfDate = rows => rows.reduce((m, r) => r.lastScanned && r.lastScanned > m ? r.lastScanned : m, '') || todayStr();
+const latestSnapshot = () => state.snapshots[state.snapshots.length - 1] || null;
+
+let pending = null; // file being mapped
+async function importFile(file) {
+  try {
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(new Uint8Array(buf), { type: 'array', cellDates: true });
+    const sheets = wb.SheetNames.map(name => ({ name, aoa: XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: '', raw: true }) }))
+      .filter(s => s.aoa.length);
+    if (!sheets.length) throw new Error('The file has no data.');
+    // Pick the sheet whose best header row matches the most tracker fields
+    const scored = sheets.map((s, i) => ({ i, hr: detectHeaderRow(s.aoa) })).map(x => ({ ...x, score: headerRowScore(sheets[x.i].aoa[x.hr]) }));
+    const best = scored.reduce((a, b) => b.score > a.score ? b : a);
+    pending = { fileName: file.name, sheets, sheetIdx: best.i, headerRow: best.hr, currentTouched: false };
+    pending.map = autoMap(headersOf(), dataRowsOf());
+    renderMapping();
+    $('mapDlg').showModal();
+  } catch (e) {
+    console.error(e);
+    toast('Could not read file: ' + e.message);
+  }
+}
+function dataRowsOf() {
+  return pending.sheets[pending.sheetIdx].aoa.slice(pending.headerRow + 1, pending.headerRow + 200);
+}
+function headersOf() {
+  return (pending.sheets[pending.sheetIdx].aoa[pending.headerRow] || []).map(h => String(h instanceof Date ? ymd(h) : h ?? '').trim());
+}
+function renderMapping() {
+  const p = pending, aoa = p.sheets[p.sheetIdx].aoa, headers = headersOf();
+  let ncols = headers.length;
+  for (let i = p.headerRow; i < Math.min(aoa.length, p.headerRow + 50); i++) ncols = Math.max(ncols, (aoa[i] || []).length);
+  const colName = i => headers[i] || `(Column ${XLSX.utils.encode_col(i)})`;
+  $('mapFile').textContent = `${p.fileName} — match each tracker column to a column in your file. Unmatched columns (e.g. Country) are ignored.`;
+  $('mapSheet').innerHTML = p.sheets.map((s, i) => `<option value="${i}">${esc(s.name)}</option>`).join('');
+  $('mapSheet').value = p.sheetIdx;
+  $('mapHeaderRow').value = p.headerRow + 1;
+  const opts = '<option value="">— not in file —</option>' +
+    Array.from({ length: ncols }, (_, i) => `<option value="${i}">${esc(colName(i))}</option>`).join('');
+  $('mapBody').innerHTML = FIELDS.map(f => `<tr>
+      <td>${esc(f.label)}${f.required ? ' <span class="req">*</span>' : ''}${f.hint ? `<div class="fhint">${esc(f.hint)}</div>` : ''}</td>
+      <td><select data-field="${f.key}">${opts}</select></td>
+      <td class="samples" id="smp_${f.key}"></td></tr>`).join('');
+  FIELDS.forEach(f => { $('mapBody').querySelector(`select[data-field=${f.key}]`).value = p.map[f.key] ?? ''; });
+  updateMapPreview();
+}
+function updateMapPreview() {
+  const p = pending, aoa = p.sheets[p.sheetIdx].aoa, map = p.map;
+  const dataRows = aoa.slice(p.headerRow + 1).filter(r => r && r.some(c => c !== '' && c != null));
+  const warns = [];
+  for (const f of FIELDS) {
+    const el = $('smp_' + f.key);
+    if (map[f.key] === undefined) { el.textContent = f.key === 'id' ? 'Will be numbered 1, 2, 3…' : '—'; continue; }
+    const seen = [], bad = new Set();
+    let badCount = 0;
+    for (const r of dataRows) {
+      const v = r[map[f.key]];
+      if (f.date && !isBlankDate(v) && !parseDate(v)) { badCount++; if (bad.size < 3) bad.add(String(v)); }
+      if (v === '' || v == null || seen.length >= 3) continue;
+      const shown = f.date ? (parseDate(v) ? fmtDate(parseDate(v)) : `<b>${esc(v)}</b>`) : esc(v instanceof Date ? ymd(v) : v);
+      if (!seen.includes(shown)) seen.push(shown);
+    }
+    el.innerHTML = seen.join(' · ') || '<span>(all blank)</span>';
+    if (badCount) warns.push(['warn', `${f.label}: ${badCount} value(s) are not recognisable dates (e.g. ${[...bad].map(esc).join(', ')}) and will be treated as blank.`]);
+  }
+  const missing = FIELDS.filter(f => f.required && map[f.key] === undefined);
+  if (missing.length) warns.unshift(['err', `Required: ${missing.map(f => f.label).join(', ')}. Pick the matching column to continue.`]);
+  const dupCols = Object.entries(Object.entries(map).reduce((m, [k, i]) => ((m[i] ||= []).push(FIELD_BY_KEY[k].label), m), {})).filter(([, v]) => v.length > 1);
+  dupCols.forEach(([, labels]) => warns.push(['warn', `One file column is mapped to several tracker columns: ${labels.join(', ')}.`]));
+
+  const rows = missing.length ? [] : buildRows(aoa, p.headerRow, map);
+  p.rows = rows;
+  if (rows.length) {
+    const odd = (key, known) => [...new Set(rows.map(r => r[key]))].filter(v => !known.includes(v));
+    const oddNet = odd('network', ['DMZ', 'DRN', '-', 'Unknown Status in QIP']);
+    if (oddNet.length) warns.push(['warn', `Network values not recognised: ${oddNet.slice(0, 6).map(esc).join(', ')}${oddNet.length > 6 ? '…' : ''} — these use the "${state.settings.otherNetwork}" fallback SLA.`]);
+    const oddSev = odd('severity', ['Critical', 'High', 'Medium', 'Low']);
+    if (oddSev.length) warns.push(['warn', `Severity values not recognised: ${oddSev.slice(0, 6).map(esc).join(', ')} — treated as High/Critical.`]);
+    if (map.id === undefined) warns.push(['info', 'No # column mapped — findings will be numbered in file order.']);
+    if (map.firstDetected === undefined) warns.push(['info', 'No First Detected column — never-compliant findings will use the earliest date this tracker has seen them failing.']);
+    const asOf = asOfDate(rows), latest = latestSnapshot();
+    const older = latest && asOf < latest.asOf;
+    if (!p.currentTouched) $('mapCurrent').checked = !older;
+    if (older) warns.push(['info', `This file is as of ${fmtDate(asOf)}, older than your latest snapshot (${fmtDate(latest.asOf)}). It will be added to trend history; tick "Make this the current data" to also replace the current view.`]);
+    $('mapStats').textContent = `${rows.length.toLocaleString()} findings · as of ${fmtDate(asOf)}`;
+  } else {
+    $('mapStats').textContent = '';
+  }
+  $('mapWarn').innerHTML = warns.map(([cls, msg]) => `<li class="${cls}">${msg}</li>`).join('');
+  $('mapImport').disabled = !rows.length;
+}
+
+function confirmImport() {
+  const p = pending;
+  if (!p?.rows?.length) return;
+  const headers = headersOf();
+  for (const [field, i] of Object.entries(p.map)) { const h = normHeader(headers[i]); if (h) state.mapMemory[h] = field; }
+  $('mapDlg').close();
+  applyImport(p.rows, p.fileName, $('mapCurrent').checked);
+  pending = null;
+}
+
+// Remembers when never-compliant findings were first seen failing, so the SLA clock doesn't restart every scan
+function trackFirstSeen(rows, isLatest) {
+  for (const r of rows) {
+    const k = itemKey(r);
+    if (r.lastCompliant) { if (isLatest) delete state.firstSeen[k]; continue; } // the Last Compliant Date drives the clock now
+    const d = [r.firstDetected, r.lastScanned].filter(Boolean).sort()[0];
+    if (d && (!state.firstSeen[k] || d < state.firstSeen[k])) state.firstSeen[k] = d;
+  }
+}
+function hashKey(s) { // FNV-1a, compact key for new/resolved comparison between snapshots
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0).toString(36);
+}
+function recordSnapshot(rows, fileName) {
+  const asOf = asOfDate(rows);
+  const ev = rows.map(r => ({ ...r, ...evaluate(r, state.settings, asOf) }));
+  const c = statusCounts(ev);
+  const openKeys = [...new Set(ev.filter(r => isOpen(r.status)).map(r => hashKey(itemKey(r))))];
+  const prev = state.snapshots.find(s => s.asOf === asOf);
+  let newOpen = prev?.newOpen ?? null, resolved = prev?.resolved ?? null;
+  const lo = state.lastOpen;
+  if (!lo || asOf > lo.asOf) {
+    if (lo) { const before = new Set(lo.keys), now = new Set(openKeys);
+              newOpen = openKeys.filter(k => !before.has(k)).length; resolved = lo.keys.filter(k => !now.has(k)).length; }
+    state.lastOpen = { asOf, keys: openKeys };
+  } else if (asOf === lo.asOf) {
+    state.lastOpen = { asOf, keys: openKeys };
+  }
+  const snap = { asOf, fileName, importedAt: new Date().toISOString(), assets: new Set(rows.map(r => r.asset)).size,
+                 total: c.total, ok: c.ok, open: c.open, within: c.within, soon: c.soon, bad: c.bad, accepted: c.accepted, unk: c.unk,
+                 newOpen, resolved };
+  state.snapshots = state.snapshots.filter(s => s.asOf !== asOf).concat(snap).sort((a, b) => a.asOf.localeCompare(b.asOf));
+  return snap;
+}
+function applyImport(rows, fileName, makeCurrent) {
+  const asOf = asOfDate(rows), latest = latestSnapshot();
+  trackFirstSeen(rows, !latest || asOf >= latest.asOf);
+  const snap = recordSnapshot(rows, fileName);
+  if (makeCurrent) {
+    state.rows = rows; state.fileName = fileName; state.loadedAt = new Date().toISOString();
+    view.page = 0; view.kpi = ''; view.selected.clear();
+    resetFilters(false);
+  }
+  save();
+  render();
+  const keys = new Set(rows.map(itemKey));
+  const carried = Object.keys(state.exceptions).filter(k => keys.has(k)).length;
+  toast(`Imported ${rows.length} findings (as of ${fmtDate(asOf)})${makeCurrent ? '' : ' into trend history'}.` +
+        (carried ? ` ${carried} saved exception(s) applied.` : '') +
+        (snap.newOpen != null ? ` ${snap.newOpen} new open, ${snap.resolved} resolved since last snapshot.` : ''));
+}
+
+// ---------- SLA evaluation ----------
+// Exceptions are keyed by the finding's identity so they survive re-uploads of a fresh sheet
+const itemKey = r => [r.asset, r.category, r.setting].map(v => String(v).trim().toLowerCase()).join('|');
+const sevGroup = sev => (sev === 'Medium' || sev === 'Low') ? 'ML' : 'HC'; // unknown severity → stricter group
+function slaRule(row, s = state.settings) {
+  const known = row.network === 'DMZ' || row.network === 'DRN';
+  const net = known ? row.network : s.otherNetwork;
+  const grp = sevGroup(row.severity);
+  return { net, grp, days: s.sla[net][grp], label: `${net} · ${GROUP_LABEL[grp]}${known ? '' : ' (fallback)'}` };
+}
+
+// When did the current failure start? Returns [date, basis]
+function slaStart(row, firstSeen = state.firstSeen) {
+  const { lastScanned: ls, lastCompliant: lc, firstDetected: fd } = row;
+  if (lc) return fd && fd > lc ? [fd, 'First detected'] : [lc, 'Last compliant'];
+  // Never compliant: earliest evidence wins (ties keep the first, most specific label)
+  const opts = [[fd, 'First detected'], [ls, 'Last scanned (no earlier record)'], [firstSeen[itemKey(row)], 'First seen by tracker']]
+    .filter(([d]) => d);
+  return opts.reduce((a, b) => b[0] < a[0] ? b : a);
+}
+
+function evaluate(row, s = state.settings, today = todayStr(), exceptions = state.exceptions, firstSeen = state.firstSeen) {
+  const { lastScanned: ls, lastCompliant: lc, firstDetected: fd } = row;
+  const t = dayNum(today);
+  const rule = slaRule(row, s);
+  const exception = exceptions[itemKey(row)] || null;
+  const base = { stale: ls ? (t - dayNum(ls)) > s.staleDays : true, rule: rule.label, policyDays: rule.days,
+                 slaDays: exception?.type === 'days' ? exception.days : rule.days, exception,
+                 start: null, basis: '', daysOut: null, due: null, remaining: null };
+  if (!ls && !lc && !fd) return { ...base, status: 'unk' };
+  // Compliant if the most recent scan was also the most recent compliant result
+  if (lc && (!ls || dayNum(lc) >= dayNum(ls))) return { ...base, status: 'ok', daysOut: 0 };
+  const [start, basis] = slaStart(row, firstSeen);
+  base.start = start; base.basis = basis;
+  const daysOut = t - dayNum(start);
+  if (exception?.type === 'accepted') return { ...base, status: 'accepted', daysOut };
+  const due = exception?.type === 'date' ? exception.date : addDays(start, base.slaDays);
+  const remaining = dayNum(due) - t;
+  const slaDays = dayNum(due) - dayNum(start);
+  const status = remaining < 0 ? 'bad' : remaining <= s.dueSoon ? 'soon' : 'within';
+  return { ...base, slaDays, status, daysOut, due, remaining };
+}
+
+function evaluated() {
+  const today = todayStr();
+  return state.rows.map((r, uid) => ({ ...r, uid, key: itemKey(r), ...evaluate(r, state.settings, today) }));
+}
+
+// ---------- Aggregations (shared by dashboard and report) ----------
+function countBy(rows, key) { return rows.reduce((m, r) => (m[r[key]] = (m[r[key]] || 0) + 1, m), {}); }
+function statusCounts(rows) {
+  const c = Object.fromEntries(BAR_KEYS.map(k => [k, 0]));
+  for (const r of rows) c[r.status]++;
+  c.open = OPEN_KEYS.reduce((s, k) => s + c[k], 0);
+  c.total = rows.length;
+  return c;
+}
+function groupBy(rows, fn) {
+  const m = new Map();
+  for (const r of rows) { const k = fn(r); if (!m.has(k)) m.set(k, []); m.get(k).push(r); }
+  return m;
+}
+const AGING = [[0, 30, '0–30 days'], [31, 60, '31–60 days'], [61, 90, '61–90 days'],
+               [91, 120, '91–120 days'], [121, 180, '121–180 days'], [181, Infinity, '180+ days']];
+
+function aggregate(all) {
+  const open = all.filter(r => isOpen(r.status));
+  const networks = [...new Set(all.map(r => r.network))].sort((a, b) =>
+    (['DMZ', 'DRN'].indexOf(a) + 1 || 9) - (['DMZ', 'DRN'].indexOf(b) + 1 || 9) || a.localeCompare(b));
+  const netSev = [];
+  for (const network of networks) for (const grp of ['HC', 'ML']) {
+    const rows = all.filter(r => r.network === network && sevGroup(r.severity) === grp);
+    if (rows.length) netSev.push({ network, grp, rule: slaRule({ network, severity: grp === 'HC' ? 'High' : 'Low' }), ...statusCounts(rows) });
+  }
+  const sevRank = rows => rows.reduce((best, r) => (SEV_ORDER[r.severity] ?? 9) < (SEV_ORDER[best] ?? 9) ? r.severity : best, rows[0].severity);
+  return {
+    status: statusCounts(all),
+    assets: new Set(all.map(r => r.asset)).size,
+    stale: all.filter(r => r.stale).length,
+    exceptions: all.filter(r => r.exception).length,
+    categories: [...groupBy(all, r => r.category)].map(([name, rows]) => ({ name, ...statusCounts(rows) }))
+      .sort((a, b) => b.open - a.open || b.total - a.total || a.name.localeCompare(b.name)),
+    severities: [...groupBy(all, r => r.severity)].map(([name, rows]) => ({ name, ...statusCounts(rows) }))
+      .sort((a, b) => (SEV_ORDER[a.name] ?? 9) - (SEV_ORDER[b.name] ?? 9)),
+    netSev,
+    topIssues: [...groupBy(open, r => r.setting + '\u0000' + r.category)].map(([, rows]) => ({
+      setting: rows[0].setting || '(blank)', category: rows[0].category, ...statusCounts(rows),
+      assets: new Set(rows.map(r => r.asset)).size, severity: sevRank(rows),
+    })).sort((a, b) => b.open - a.open || b.bad - a.bad || a.setting.localeCompare(b.setting)).slice(0, 10),
+    topAssets: [...groupBy(open, r => r.asset)].map(([asset, rows]) => ({
+      asset: asset || '(blank)', network: rows[0].network, ...statusCounts(rows),
+      hc: rows.filter(r => sevGroup(r.severity) === 'HC').length,
+    })).sort((a, b) => b.open - a.open || b.bad - a.bad || b.hc - a.hc).slice(0, 10),
+    overdue: all.filter(r => r.status === 'bad').sort((a, b) => a.remaining - b.remaining).slice(0, 10),
+    aging: AGING.map(([lo, hi, label]) => ({ label, value: open.filter(r => r.daysOut >= lo && r.daysOut <= hi).length })),
+  };
+}
+
+// ---------- Filtering / sorting ----------
+const COLUMNS = [
+  { key: 'id',            label: '#',               num: true },
+  { key: 'asset',         label: 'Asset' },
+  { key: 'network',       label: 'Network' },
+  { key: 'severity',      label: 'Severity' },
+  { key: 'category',      label: 'Test Category' },
+  { key: 'setting',       label: 'Setting' },
+  { key: 'lastScanned',   label: 'Last Scanned' },
+  { key: 'lastCompliant', label: 'Last Compliant' },
+  { key: 'start',         label: 'SLA Start' },
+  { key: 'daysOut',       label: 'Days Non-Compl.', num: true },
+  { key: 'slaDays',       label: 'SLA (days)',      num: true },
+  { key: 'due',           label: 'SLA Due' },
+  { key: 'remaining',     label: 'Days Left',       num: true },
+  { key: 'status',        label: 'Status' },
+];
+
+function filtered(all) {
+  const q = $('q').value.trim().toLowerCase();
+  const st = $('fStatus').value, sev = $('fSeverity').value, net = $('fNetwork').value, cat = $('fCategory').value;
+  const staleOnly = $('fStale').checked;
+  return all.filter(r =>
+    (!st || (st === 'open' ? isOpen(r.status) : st === 'exc' ? !!r.exception : r.status === st)) &&
+    (!sev || r.severity === sev) &&
+    (!net || r.network === net) &&
+    (!cat || r.category === cat) &&
+    (!staleOnly || r.stale) &&
+    (!q || [r.id, r.asset, r.setting, r.category, r.network].some(v => String(v).toLowerCase().includes(q))));
+}
+function cmp(a, b, key) {
+  if (key === 'status') return STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || nullLast(a.remaining, b.remaining);
+  if (key === 'severity') return (SEV_ORDER[a.severity] ?? 9) - (SEV_ORDER[b.severity] ?? 9);
+  const x = a[key], y = b[key];
+  if (key === 'id') { const nx = parseFloat(x), ny = parseFloat(y); if (!isNaN(nx) && !isNaN(ny)) return nx - ny; }
+  if (typeof x === 'number' || typeof y === 'number') return nullLast(x, y);
+  if (x == null || x === '') return 1;
+  if (y == null || y === '') return -1;
+  return String(x).localeCompare(String(y), undefined, { numeric: true });
+}
+function nullLast(x, y) { return (x == null) - (y == null) || (x ?? 0) - (y ?? 0); }
+function sortRows(rows) {
+  const { key, dir } = view.sort;
+  return rows.sort((a, b) => cmp(a, b, key) * dir || cmp(a, b, 'id'));
+}
+
+// ---------- Rendering ----------
+function fillSelect(sel, label, values, current) {
+  sel.innerHTML = `<option value="">${esc(label)}</option>` +
+    values.map(([v, t]) => `<option value="${esc(v)}">${esc(t ?? v)}</option>`).join('');
+  sel.value = values.some(([v]) => v === current) ? current : '';
+}
+function uniq(rows, key, order) {
+  const vals = [...new Set(rows.map(r => r[key]))];
+  return order ? vals.sort((a, b) => (order[a] ?? 9) - (order[b] ?? 9)) : vals.sort((a, b) => String(a).localeCompare(String(b)));
+}
+const netLabel = v => v === '-' ? '- (none)' : v;
+
+function render() {
+  const has = state.rows.length > 0;
+  const onTrend = view.tab === 'trend';
+  $('tabs').classList.toggle('hidden', !has && !state.snapshots.length);
+  document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === (onTrend ? 'trend' : 'dash')));
+  $('empty').classList.toggle('hidden', has || onTrend);
+  $('dash').classList.toggle('hidden', !has || onTrend);
+  $('trend').classList.toggle('hidden', !onTrend);
+  $('btnClear').classList.toggle('hidden', !has);
+  $('btnReport').classList.toggle('hidden', !has);
+  $('meta').textContent = has ? `${state.fileName} · loaded ${new Date(state.loadedAt).toLocaleString()} · as of ${fmtDate(todayStr())}` : '';
+  if (onTrend) return renderTrend();
+  if (!has) return;
+
+  const all = evaluated();
+  const agg = aggregate(all);
+
+  fillSelect($('fStatus'), 'All statuses',
+    [['open', 'Open (not compliant)'], ...['bad', 'soon', 'within', 'accepted', 'ok', 'unk'].map(k => [k, STATUS[k].label]),
+     ['exc', 'Has SLA exception']], $('fStatus').value);
+  fillSelect($('fSeverity'), 'All severities', uniq(all, 'severity', SEV_ORDER).map(v => [v]), $('fSeverity').value);
+  fillSelect($('fNetwork'), 'All networks', uniq(all, 'network').map(v => [v, netLabel(v)]), $('fNetwork').value);
+  fillSelect($('fCategory'), 'All test categories', uniq(all, 'category').map(v => [v]), $('fCategory').value);
+
+  renderKpis(agg);
+  const s = state.settings;
+  $('policy').innerHTML = `SLA policy: <b>DMZ</b> High/Critical ${s.sla.DMZ.HC}d, Medium/Low ${s.sla.DMZ.ML}d ·
+    <b>DRN</b> High/Critical ${s.sla.DRN.HC}d, Medium/Low ${s.sla.DRN.ML}d · "-" / Unknown use ${s.otherNetwork} rules ·
+    <b>${agg.exceptions}</b> finding(s) with exceptions`;
+
+  const filterItem = (filterId, value, label, counts, labelCls = '') =>
+    ({ label, labelCls, counts, attrs: `data-filter="${filterId}" data-value="${esc(value)}"` });
+  renderBars($('bySeverity'), agg.severities.map(g => filterItem('fSeverity', g.name, g.name, g, 'sev-' + g.name)));
+  const byNet = [...groupBy(all, r => r.network)].map(([n, rows]) => ({ n, c: statusCounts(rows) }))
+    .sort((a, b) => a.n.localeCompare(b.n));
+  renderBars($('byNetwork'), byNet.map(({ n, c }) => filterItem('fNetwork', n, netLabel(n), c)));
+  renderBars($('byCategory'), agg.categories.slice(0, 8).map(g => filterItem('fCategory', g.name, g.name, g)));
+  renderBars($('topIssues'), agg.topIssues.map(g => ({ label: g.setting, counts: g, attrs: `data-search="${esc(g.setting)}"`,
+    title: `${g.setting} — ${g.category}: ${g.open} open on ${g.assets} asset(s)` })), true);
+  renderBars($('topAssets'), agg.topAssets.map(g => ({ label: g.asset, counts: g, attrs: `data-search="${esc(g.asset)}"`,
+    title: `${g.asset} (${g.network}): ${g.open} open, ${g.bad} breached` })), true);
+  renderTable(all);
+}
+
+function renderTrend() {
+  const snaps = state.snapshots;
+  const maxOpen = Math.max(1, ...snaps.map(s => s.open));
+  $('trendChart').innerHTML = snaps.length ? snaps.map(s => {
+    const segs = ['bad', 'soon', 'within', 'accepted'].filter(k => s[k])
+      .map(k => `<span class="${STATUS[k].bar}" style="height:${s[k] / maxOpen * 170}px" title="${STATUS[k].label}: ${s[k]}"></span>`).join('');
+    return `<div class="tcol" title="${esc(s.fileName)}">
+      <div class="tpct">${s.total ? Math.round(s.ok / s.total * 100) : 0}%</div>
+      <div class="tnum">${s.open}</div>
+      <div class="tstack">${segs}</div>
+      <div class="tdate">${shortDate(s.asOf)}</div></div>`;
+  }).join('') : '<div style="color:var(--muted);align-self:center;margin:auto">No snapshots yet — each uploaded file adds one.</div>';
+  const delta = v => v == null ? '<span style="color:var(--muted)">—</span>' : v;
+  $('trendBody').innerHTML = snaps.slice().reverse().map(s => `<tr>
+      <td>${fmtDate(s.asOf)}</td><td>${esc(s.fileName)}</td>
+      <td class="num">${s.total.toLocaleString()}</td>
+      <td class="num">${s.total ? (s.ok / s.total * 100).toFixed(1) : '0.0'}%</td>
+      <td class="num">${s.open}</td><td class="num" style="color:var(--bad)">${s.bad}</td>
+      <td class="num">${s.soon}</td><td class="num">${s.accepted}</td>
+      <td class="num">${s.newOpen ? `<span class="delta-up">+${s.newOpen}</span>` : delta(s.newOpen)}</td>
+      <td class="num">${s.resolved ? `<span class="delta-down">${s.resolved}</span>` : delta(s.resolved)}</td>
+      <td><button class="icon" data-del-snap="${esc(s.asOf)}" title="Delete snapshot">✕</button></td></tr>`).join('') ||
+    '<tr><td colspan="11" style="text-align:center;color:var(--muted);padding:20px">No snapshots yet.</td></tr>';
+}
+
+function renderKpis(agg) {
+  const c = agg.status, s = state.settings;
+  const pct = n => c.total ? Math.round(n / c.total * 100) + '%' : '0%';
+  const tiles = [
+    ['', 'k-total', 'Total findings', c.total, `${agg.assets} assets`],
+    ['ok', 'k-ok', 'Compliant', c.ok, pct(c.ok) + ' of findings'],
+    ['within', 'k-within', 'Within SLA', c.within, 'open, on track'],
+    ['soon', 'k-soon', 'Due soon', c.soon, `≤ ${s.dueSoon} days left`],
+    ['bad', 'k-bad', 'SLA breached', c.bad, pct(c.bad) + ' of findings'],
+    ['accepted', 'k-acc', 'Risk accepted', c.accepted, 'no SLA deadline'],
+    ['stale', 'k-stale', 'Stale scans', agg.stale, `> ${s.staleDays} days old`],
+  ];
+  $('kpis').innerHTML = tiles.map(([k, cls, label, val, sub]) =>
+    `<div class="kpi ${cls} ${view.kpi === k && k ? 'active' : ''}" data-kpi="${k}">
+       <div class="label">${label}</div><div class="value">${val.toLocaleString()}</div><div class="sub">${esc(sub)}</div>
+     </div>`).join('');
+}
+
+function renderBars(el, items, openOnly = false) {
+  const keys = openOnly ? OPEN_KEYS.slice().reverse() : BAR_KEYS;
+  el.innerHTML = items.map(it => {
+    const c = it.counts, total = openOnly ? c.open : c.total;
+    const segs = keys.filter(k => c[k])
+      .map(k => `<span class="${STATUS[k].bar}" style="width:${c[k] / total * 100}%" title="${STATUS[k].label}: ${c[k]}"></span>`).join('');
+    return `<div class="brow" ${it.attrs} title="${esc(it.title || 'Filter by ' + it.label)}">
+      <span class="bname ${esc(it.labelCls || '')}">${esc(it.label)}</span>
+      <div class="bar">${segs}</div>
+      <span class="bnum">${c.bad ? `<span style="color:var(--bad)">${c.bad}</span>/` : ''}${total}</span></div>`;
+  }).join('') || `<div style="color:var(--muted)">${openOnly ? 'No open findings' : 'No data'}</div>`;
+}
+
+function renderTable(all) {
+  const rows = sortRows(filtered(all));
+  view.lastFiltered = rows;
+  const pages = Math.max(1, Math.ceil(rows.length / view.pageSize));
+  view.page = Math.min(view.page, pages - 1);
+  const slice = rows.slice(view.page * view.pageSize, (view.page + 1) * view.pageSize);
+  const allSel = rows.length > 0 && rows.every(r => view.selected.has(r.uid));
+  const { key, dir } = view.sort;
+
+  $('thead').innerHTML = `<th><input type="checkbox" id="selAll" title="Select all ${rows.length} filtered findings" ${allSel ? 'checked' : ''}></th>` +
+    COLUMNS.map(c => `<th data-sort="${c.key}" class="${c.num ? 'num' : ''}">${c.label}${key === c.key ? `<span class="arrow">${dir > 0 ? '▲' : '▼'}</span>` : ''}</th>`).join('') +
+    '<th>Exception</th>';
+  $('tbody').innerHTML = slice.map(r => {
+    const e = r.exception;
+    const excTip = e ? `${EXC_LABEL[e.type]}${e.type === 'days' ? ': ' + e.days + ' days' : e.type === 'date' ? ': ' + e.date : ''} — ${e.reason}${e.by ? ' (approved by ' + e.by + ')' : ''}` : '';
+    return `<tr class="${view.selected.has(r.uid) ? 'sel' : ''}">
+      <td><input type="checkbox" data-uid="${r.uid}" ${view.selected.has(r.uid) ? 'checked' : ''}></td>
+      <td class="num">${esc(r.id)}</td>
+      <td>${esc(r.asset)}</td>
+      <td>${esc(r.network)}</td>
+      <td class="sev-${esc(r.severity)}">${esc(r.severity)}</td>
+      <td>${esc(r.category)}</td>
+      <td class="wrap">${esc(r.setting)}</td>
+      <td>${fmtDate(r.lastScanned)}${r.stale && r.lastScanned ? '<span class="stale" title="Scan older than threshold">● stale</span>' : ''}</td>
+      <td>${fmtDate(r.lastCompliant)}</td>
+      <td title="${esc(r.basis)}">${r.start ? fmtDate(r.start) : '—'}${r.basis && r.basis !== 'Last compliant' ? ` <span style="color:var(--muted);font-size:11px">${r.basis === 'First detected' ? 'detected' : r.basis === 'First seen by tracker' ? 'tracked' : 'est.'}</span>` : ''}</td>
+      <td class="num">${r.daysOut ?? '—'}</td>
+      <td class="num" title="${esc(r.rule)}">${r.status === 'accepted' ? '—' : r.slaDays}${e && e.type !== 'accepted' ? ' <span class="exc">✱</span>' : ''}</td>
+      <td>${r.due ? fmtDate(r.due) : '—'}</td>
+      <td class="num">${r.remaining == null ? '—' : r.remaining < 0 ? `<span style="color:var(--bad)">${r.remaining}</span>` : r.remaining}</td>
+      <td><span class="pill ${STATUS[r.status].cls}">${STATUS[r.status].label}</span></td>
+      <td>${e ? `<span class="exc" title="${esc(excTip)}">${EXC_LABEL[e.type]}</span> ` : ''}<button class="icon" data-edit="${r.uid}" title="Set SLA exception">✎</button></td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="${COLUMNS.length + 2}" style="text-align:center;color:var(--muted);padding:24px">No findings match these filters.</td></tr>`;
+
+  const n = view.selected.size;
+  $('btnBulkExc').disabled = n === 0;
+  $('btnBulkExc').textContent = n ? `Set SLA exception for ${n} selected` : 'Set SLA exception for selected';
+  $('btnClearSel').classList.toggle('hidden', n === 0);
+  $('count').textContent = `${rows.length.toLocaleString()} of ${all.length.toLocaleString()} findings`;
+  $('pageInfo').textContent = `Page ${view.page + 1} of ${pages}`;
+  $('prev').disabled = view.page === 0;
+  $('next').disabled = view.page >= pages - 1;
+}
+
+// ---------- Exceptions ----------
+let excTarget = [];
+function openException(uids) {
+  const all = evaluated();
+  const rows = uids.map(u => all[u]).filter(Boolean);
+  if (!rows.length) return;
+  excTarget = [...new Set(rows.map(r => r.key))];
+  const r0 = rows[0];
+  const existing = excTarget.map(k => state.exceptions[k]).filter(Boolean);
+  $('excTitle').textContent = rows.length === 1 ? 'SLA exception' : `SLA exception — ${rows.length} findings`;
+  $('excInfo').textContent = rows.length === 1
+    ? `${r0.asset} · ${r0.setting} — standard policy: ${r0.policyDays} days (${r0.rule}).`
+    : `Applies to ${excTarget.length} distinct finding(s). ${existing.length} already have an exception and will be overwritten.`;
+  const e = existing.length === excTarget.length && existing.every(x => JSON.stringify(x) === JSON.stringify(existing[0])) ? existing[0] : null;
+  document.querySelector(`input[name=excType][value=${e ? e.type : 'policy'}]`).checked = true;
+  $('excDays').value = e?.type === 'days' ? e.days : (rows.length === 1 ? r0.policyDays : '');
+  $('excDate').value = e?.type === 'date' ? e.date : (r0.due || '');
+  $('excReason').value = e?.reason || '';
+  $('excBy').value = e?.by || '';
+  $('excDlg').showModal();
+}
+function saveException() {
+  const type = document.querySelector('input[name=excType]:checked').value;
+  if (type === 'policy') {
+    excTarget.forEach(k => delete state.exceptions[k]);
+  } else {
+    const reason = $('excReason').value.trim();
+    if (!reason) return toast('Please enter a reason for the exception.');
+    const days = parseInt($('excDays').value, 10), date = $('excDate').value;
+    if (type === 'days' && !(days >= 0)) return toast('Enter the custom SLA in days.');
+    if (type === 'date' && !date) return toast('Pick the custom due date.');
+    const rec = { type, reason, by: $('excBy').value.trim(), updated: todayStr() };
+    if (type === 'days') rec.days = days;
+    if (type === 'date') rec.date = date;
+    excTarget.forEach(k => state.exceptions[k] = { ...rec });
+  }
+  save();
+  $('excDlg').close();
+  view.selected.clear();
+  render();
+  toast(type === 'policy' ? `Standard SLA restored for ${excTarget.length} finding(s).` : `Exception saved for ${excTarget.length} finding(s).`);
+}
+
+// ---------- Excel output ----------
+const XL = {
+  header: 'FF1F3B6E', headerText: 'FFFFFFFF', border: 'FFD0D5DC', text: 'FF1B1F24', muted: 'FF5D6673', band: 'FFF6F7F9',
+  status: { ok: ['FFE3F4EA', 'FF1F7A4A'], within: ['FFECEFF2', 'FF4B5563'], soon: ['FFFDF0D5', 'FF9A6200'],
+            bad: ['FFFDE7E5', 'FFB42318'], accepted: ['FFEDE9FB', 'FF5B45C4'], unk: ['FFF3F4F6', 'FF6B7280'] },
+};
+const fill = argb => ({ type: 'pattern', pattern: 'solid', fgColor: { argb } });
+const thin = { style: 'thin', color: { argb: XL.border } };
+const BOX = { top: thin, left: thin, bottom: thin, right: thin };
+const xlDate = s => { if (!s) return null; const [y, m, d] = s.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d)); };
+const numOrText = v => /^\d+(\.\d+)?$/.test(String(v)) ? Number(v) : v;
+const PRINT = { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0,
+                margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.3, footer: 0.3 } };
+
+function styleHeader(row) {
+  row.height = 30;
+  row.eachCell(c => {
+    c.fill = fill(XL.header); c.font = { bold: true, color: { argb: XL.headerText } };
+    c.alignment = { vertical: 'middle', wrapText: true }; c.border = BOX;
+  });
+}
+function styleStatus(cell, status) {
+  const [bg, fg] = XL.status[status];
+  cell.fill = fill(bg); cell.font = { bold: true, color: { argb: fg } };
+}
+
+const FINDING_COLS = [
+  ['#', 7, r => numOrText(r.id)], ['Asset', 22, r => r.asset], ['Network', 20, r => r.network],
+  ['Severity', 10, r => r.severity], ['Test Category', 20, r => r.category], ['Setting', 48, r => r.setting],
+  ['Last Scanned Date', 13, r => xlDate(r.lastScanned)], ['Last Compliant Date', 13, r => xlDate(r.lastCompliant)],
+  ['SLA Start Date', 13, r => xlDate(r.start)], ['SLA Start Basis', 22, r => r.basis],
+  ['Days Non-Compliant', 12, r => r.daysOut], ['SLA Rule', 26, r => r.rule],
+  ['SLA Days', 9, r => r.status === 'accepted' ? null : r.slaDays], ['SLA Due Date', 13, r => xlDate(r.due)],
+  ['Days Left', 9, r => r.remaining], ['Status', 14, r => STATUS[r.status].label], ['Stale Scan', 9, r => r.stale ? 'Yes' : 'No'],
+  ['Exception', 16, r => r.exception ? EXC_LABEL[r.exception.type] : ''], ['Exception Reason', 36, r => r.exception?.reason || ''],
+  ['Approved By', 16, r => r.exception?.by || ''],
+];
+function addFindingsSheet(wb, name, rows, tabColor) {
+  const ws = wb.addWorksheet(name, { properties: { tabColor: tabColor && { argb: tabColor } }, pageSetup: PRINT,
+                                     views: [{ state: 'frozen', ySplit: 1 }] });
+  ws.columns = FINDING_COLS.map(([header, width]) => ({ header, width }));
+  styleHeader(ws.getRow(1));
+  const col = name => FINDING_COLS.findIndex(c => c[0] === name) + 1;
+  const wrapCols = [col('Setting'), col('Exception Reason')];
+  for (const r of rows) {
+    const row = ws.addRow(FINDING_COLS.map(c => c[2](r) ?? null));
+    wrapCols.forEach(i => row.getCell(i).alignment = { wrapText: true, vertical: 'top' });
+    styleStatus(row.getCell(col('Status')), r.status);
+    if (r.remaining < 0) row.getCell(col('Days Left')).font = { color: { argb: XL.status.bad[1] }, bold: true };
+  }
+  ['Last Scanned Date', 'Last Compliant Date', 'SLA Start Date', 'SLA Due Date'].forEach(n => ws.getColumn(col(n)).numFmt = 'dd-mmm-yyyy');
+  ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: FINDING_COLS.length } };
+  ws.pageSetup.printTitlesRow = '1:1';
+  return ws;
+}
+
+// Writes a titled table; returns the next free row
+function addTable(ws, r, title, headers, data, { pctCols = [], statusCol, note } = {}) {
+  const t = ws.getCell(r, 1); t.value = title; t.font = { bold: true, size: 13, color: { argb: XL.text } };
+  if (note) { const n = ws.getCell(r + 1, 1); n.value = note; n.font = { italic: true, size: 9, color: { argb: XL.muted } }; r++; }
+  r++;
+  const hr = ws.getRow(r); headers.forEach((h, i) => hr.getCell(i + 1).value = h); styleHeader(hr);
+  if (!data.length) { ws.getCell(r + 1, 1).value = 'None'; ws.getCell(r + 1, 1).font = { italic: true, color: { argb: XL.muted } }; return r + 3; }
+  data.forEach((vals, i) => {
+    const row = ws.getRow(r + 1 + i);
+    vals.forEach((v, j) => {
+      const c = row.getCell(j + 1); c.value = v ?? null; c.border = BOX;
+      c.alignment = { vertical: 'top', wrapText: typeof v === 'string' && v.length > 30 };
+      if (i % 2) c.fill = fill(XL.band);
+      if (pctCols.includes(j)) c.numFmt = '0.0%';
+      if (v instanceof Date) c.numFmt = 'dd-mmm-yyyy';
+    });
+    if (statusCol !== undefined) styleStatus(row.getCell(statusCol + 1), vals.statusKey);
+  });
+  return r + data.length + 3;
+}
+
+// ---------- Chart drawing (canvas → PNG for the report) ----------
+const RC = { ok: '#2e8b57', within: '#8a94a3', soon: '#e0a100', bad: '#c62828', accepted: '#6d5bd0', unk: '#cfd4db',
+             text: '#1b1f24', muted: '#5d6673', grid: '#e8eaee', frame: '#dde1e6' };
+const FONT = '"Segoe UI", Arial, Helvetica, sans-serif';
+
+function chartCanvas(w, h, title, subtitle) {
+  const k = 2, c = document.createElement('canvas');
+  c.width = w * k; c.height = h * k;
+  const ctx = c.getContext('2d'); ctx.scale(k, k);
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = RC.frame; ctx.lineWidth = 1; ctx.strokeRect(0.5, 0.5, w - 1, h - 1);
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = RC.text; ctx.font = `600 16px ${FONT}`; ctx.fillText(title, 18, 28);
+  if (subtitle) { ctx.fillStyle = RC.muted; ctx.font = `12px ${FONT}`; ctx.fillText(subtitle, 18, 47); }
+  return { c, ctx, top: subtitle ? 58 : 42 };
+}
+const toImg = (c, w, h) => ({ url: c.toDataURL('image/png'), w, h });
+function fitText(ctx, text, maxW) {
+  text = String(text);
+  if (ctx.measureText(text).width <= maxW) return text;
+  while (text.length > 1 && ctx.measureText(text + '…').width > maxW) text = text.slice(0, -1);
+  return text + '…';
+}
+function drawLegend(ctx, keys, x, y) {
+  ctx.font = `12px ${FONT}`; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+  for (const k of keys) {
+    ctx.fillStyle = RC[k]; ctx.fillRect(x, y - 5, 10, 10);
+    ctx.fillStyle = RC.muted; ctx.fillText(STATUS[k].label, x + 14, y);
+    x += 14 + ctx.measureText(STATUS[k].label).width + 18;
+  }
+  return x;
+}
+function niceStep(max, ticks = 5) {
+  const raw = Math.max(1, max / ticks), p = Math.pow(10, Math.floor(Math.log10(raw))), n = raw / p;
+  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * p;
+}
+
+// Horizontal stacked bars, one row per item
+function hbarChart({ title, subtitle, rows, keys, w, labelW = 200, rowH = 30 }) {
+  const head = subtitle ? 58 : 42, top = head + 34, bottom = 30;
+  const h = top + bottom + Math.max(1, rows.length) * rowH;
+  const { c, ctx } = chartCanvas(w, h, title, subtitle);
+  drawLegend(ctx, keys, 18, head + 12);
+  const x0 = 18 + labelW + 12, plotW = w - x0 - 60;
+  if (!rows.length) {
+    ctx.fillStyle = RC.muted; ctx.font = `13px ${FONT}`; ctx.fillText('No open findings', x0, top + 14);
+    return toImg(c, w, h);
+  }
+  const totals = rows.map(r => keys.reduce((s, k) => s + (r[k] || 0), 0));
+  const step = niceStep(Math.max(...totals));
+  const max = Math.max(step, Math.ceil(Math.max(...totals) / step) * step);
+  ctx.font = `11px ${FONT}`; ctx.textBaseline = 'top'; ctx.textAlign = 'center'; ctx.lineWidth = 1;
+  for (let v = 0; v <= max; v += step) {
+    const x = Math.round(x0 + v / max * plotW) + 0.5;
+    ctx.strokeStyle = RC.grid; ctx.beginPath(); ctx.moveTo(x, top - 4); ctx.lineTo(x, h - bottom + 2); ctx.stroke();
+    ctx.fillStyle = RC.muted; ctx.fillText(v.toLocaleString(), x, h - bottom + 8);
+  }
+  const bh = Math.min(20, rowH * 0.66);
+  rows.forEach((r, i) => {
+    const cy = top + i * rowH + rowH / 2;
+    ctx.textBaseline = 'middle'; ctx.textAlign = 'right'; ctx.fillStyle = RC.text; ctx.font = `12px ${FONT}`;
+    ctx.fillText(fitText(ctx, r.label, labelW), x0 - 10, cy);
+    let x = x0;
+    for (const k of keys) {
+      const v = r[k] || 0; if (!v) continue;
+      const bw = v / max * plotW;
+      ctx.fillStyle = RC[k]; ctx.fillRect(x, cy - bh / 2, bw, bh);
+      if (bw > 22) { ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.font = `600 11px ${FONT}`; ctx.fillText(v, x + bw / 2, cy); }
+      x += bw;
+    }
+    ctx.textAlign = 'left'; ctx.fillStyle = RC.text; ctx.font = `600 12px ${FONT}`;
+    ctx.fillText(totals[i].toLocaleString(), x + 6, cy);
+  });
+  return toImg(c, w, h);
+}
+
+function donutChart({ title, subtitle, parts, w, h, center, centerSub }) {
+  const { c, ctx, top } = chartCanvas(w, h, title, subtitle);
+  const total = parts.reduce((s, p) => s + p.value, 0) || 1;
+  const R = Math.min((h - top - 24) / 2, 120), r = R * 0.62, cx = 30 + R, cy = top + (h - top) / 2;
+  let a = -Math.PI / 2;
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+  for (const p of parts) {
+    if (!p.value) continue;
+    const da = p.value / total * Math.PI * 2;
+    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.arc(cx, cy, R, a, a + da); ctx.closePath();
+    ctx.fillStyle = p.color; ctx.fill(); ctx.stroke(); a += da;
+  }
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill();
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = RC.text; ctx.font = `700 28px ${FONT}`; ctx.fillText(center, cx, cy - 8);
+  ctx.fillStyle = RC.muted; ctx.font = `12px ${FONT}`; ctx.fillText(centerSub, cx, cy + 16);
+  const lx = cx + R + 36, rowH = 28, ly = cy - (parts.length * rowH) / 2 + rowH / 2;
+  parts.forEach((p, i) => {
+    const y = ly + i * rowH;
+    ctx.fillStyle = p.color; ctx.fillRect(lx, y - 6, 12, 12);
+    ctx.textAlign = 'left'; ctx.fillStyle = RC.text; ctx.font = `13px ${FONT}`; ctx.fillText(p.label, lx + 20, y);
+    ctx.textAlign = 'right'; ctx.font = `600 13px ${FONT}`; ctx.fillText(p.value.toLocaleString(), w - 78, y);
+    ctx.fillStyle = RC.muted; ctx.font = `12px ${FONT}`;
+    ctx.fillText((p.value / total * 100).toFixed(1) + '%', w - 20, y);
+  });
+  return toImg(c, w, h);
+}
+
+function columnChart({ title, subtitle, cats, w, h, colors }) {
+  const { c, ctx, top } = chartCanvas(w, h, title, subtitle);
+  const t = top + 18, bottom = 40, left = 48, right = 18, plotH = h - t - bottom, plotW = w - left - right;
+  const maxV = Math.max(...cats.map(c => c.value), 0);
+  const step = niceStep(maxV, 4), max = Math.max(step, Math.ceil(maxV / step) * step);
+  ctx.font = `11px ${FONT}`; ctx.textBaseline = 'middle'; ctx.textAlign = 'right'; ctx.lineWidth = 1;
+  for (let v = 0; v <= max; v += step) {
+    const y = Math.round(t + plotH - v / max * plotH) + 0.5;
+    ctx.strokeStyle = RC.grid; ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(w - right, y); ctx.stroke();
+    ctx.fillStyle = RC.muted; ctx.fillText(v.toLocaleString(), left - 8, y);
+  }
+  const slot = plotW / cats.length, bw = Math.min(64, slot * 0.6);
+  cats.forEach((cat, i) => {
+    const x = left + i * slot + (slot - bw) / 2, bh = cat.value / max * plotH, y = t + plotH - bh;
+    ctx.fillStyle = colors[i % colors.length]; ctx.fillRect(x, y, bw, bh);
+    ctx.textAlign = 'center'; ctx.fillStyle = RC.text; ctx.font = `600 12px ${FONT}`; ctx.textBaseline = 'bottom';
+    ctx.fillText(cat.value.toLocaleString(), x + bw / 2, y - 4);
+    ctx.textBaseline = 'top'; ctx.font = `12px ${FONT}`; ctx.fillStyle = RC.muted;
+    ctx.fillText(fitText(ctx, cat.label, slot - 4), x + bw / 2, t + plotH + 8);
+  });
+  return toImg(c, w, h);
+}
+
+const shortDate = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: '2-digit' }); };
+
+// Stacked columns of open issues per snapshot, with a compliance % line on a 0–100% right axis
+function trendChart({ title, subtitle, snaps, w, h }) {
+  const { c, ctx, top } = chartCanvas(w, h, title, subtitle);
+  const keys = ['bad', 'soon', 'within', 'accepted'];
+  let lx = drawLegend(ctx, keys, 18, top + 12);
+  ctx.strokeStyle = RC.ok; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(lx, top + 12); ctx.lineTo(lx + 18, top + 12); ctx.stroke();
+  ctx.fillStyle = RC.muted; ctx.fillText('Compliance %', lx + 24, top + 12);
+  const t = top + 40, bottom = 40, left = 52, right = 56, plotH = h - t - bottom, plotW = w - left - right;
+  const maxV = Math.max(...snaps.map(s => s.open), 0);
+  const step = niceStep(maxV, 4), max = Math.max(step, Math.ceil(maxV / step) * step);
+  ctx.font = `11px ${FONT}`; ctx.textBaseline = 'middle'; ctx.lineWidth = 1;
+  for (let v = 0; v <= max; v += step) {
+    const y = Math.round(t + plotH - v / max * plotH) + 0.5;
+    ctx.strokeStyle = RC.grid; ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(w - right, y); ctx.stroke();
+    ctx.fillStyle = RC.muted; ctx.textAlign = 'right'; ctx.fillText(v.toLocaleString(), left - 8, y);
+    ctx.textAlign = 'left'; ctx.fillStyle = RC.ok; ctx.fillText(Math.round(v / max * 100) + '%', w - right + 8, y);
+  }
+  const slot = plotW / snaps.length, bw = Math.min(56, slot * 0.55), pts = [];
+  snaps.forEach((s, i) => {
+    const cx = left + i * slot + slot / 2;
+    let y = t + plotH;
+    for (const k of keys) {
+      const bh = (s[k] || 0) / max * plotH; if (!bh) continue;
+      ctx.fillStyle = RC[k]; ctx.fillRect(cx - bw / 2, y - bh, bw, bh); y -= bh;
+    }
+    ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'; ctx.fillStyle = RC.text; ctx.font = `600 11px ${FONT}`;
+    ctx.fillText(s.open.toLocaleString(), cx, y - 3);
+    ctx.textBaseline = 'top'; ctx.fillStyle = RC.muted; ctx.font = `11px ${FONT}`;
+    ctx.fillText(fitText(ctx, shortDate(s.asOf), slot - 2), cx, t + plotH + 8);
+    pts.push([cx, t + plotH - (s.total ? s.ok / s.total : 0) * plotH, s.total ? Math.round(s.ok / s.total * 100) : 0, y - 10]);
+  });
+  ctx.strokeStyle = RC.ok; ctx.lineWidth = 2.5; ctx.beginPath();
+  pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke();
+  pts.forEach(([x, y, pct, countY]) => {
+    ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill(); ctx.lineWidth = 2; ctx.stroke();
+    ctx.font = `600 11px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const label = pct + '%', lw = ctx.measureText(label).width + 8;
+    const ly = Math.abs(y - 15 - countY) < 18 ? y + 15 : y - 15; // move below the point if it would cover the bar total
+    ctx.fillStyle = '#fff'; ctx.fillRect(x - lw / 2, ly - 8, lw, 16);
+    ctx.fillStyle = RC.ok; ctx.fillText(label, x, ly);
+  });
+  return toImg(c, w, h);
+}
+
+function reportCharts(agg) {
+  const s = agg.status, openKeys = ['bad', 'soon', 'within', 'accepted'];
+  const half = 590, full = 1190;
+  return {
+    status: donutChart({ title: 'Compliance status', subtitle: `${s.total.toLocaleString()} findings across ${agg.assets} assets`,
+      w: half, h: 330, center: s.total ? Math.round(s.ok / s.total * 100) + '%' : '—', centerSub: 'compliant',
+      parts: BAR_KEYS.map(k => ({ label: STATUS[k].label, value: s[k], color: RC[k] })) }),
+    netSev: hbarChart({ title: 'Open issues by network & severity', subtitle: 'Label shows the SLA applied',
+      w: half, labelW: 270, keys: openKeys,
+      rows: agg.netSev.map(g => ({ ...g, label: `${netLabel(g.network)} · ${GROUP_LABEL[g.grp]} (${g.rule.days}d)` })) }),
+    topIssues: hbarChart({ title: 'Top 10 issues', subtitle: 'Settings with the most open findings',
+      w: full, labelW: 470, keys: openKeys,
+      rows: agg.topIssues.map(g => ({ ...g, label: `${g.setting}  [${g.category}]` })) }),
+    category: hbarChart({ title: 'Total issues by test category', subtitle: 'Open findings per category, by SLA status',
+      w: full, labelW: 280, keys: openKeys, rowH: agg.categories.length > 20 ? 22 : 30,
+      rows: agg.categories.filter(g => g.open).map(g => ({ ...g, label: g.name })) }),
+    aging: columnChart({ title: 'Aging of open issues', subtitle: 'Days since last compliant',
+      w: half, h: 340, cats: agg.aging, colors: ['#c6d4ea', '#9fb6dd', '#7898cf', '#517ac1', '#2e5aa8', '#1d3f7c'] }),
+    topAssets: hbarChart({ title: 'Top 10 assets', subtitle: 'Assets with the most open findings',
+      w: half, labelW: 170, keys: openKeys, rows: agg.topAssets.map(g => ({ ...g, label: g.asset })) }),
+    trend: state.snapshots.length >= 2 ? trendChart({ title: 'Trend', subtitle: 'Open issues by SLA status and compliance rate per snapshot',
+      w: full, h: 360, snaps: state.snapshots.slice(-18) }) : null,
+  };
+}
+
+function addDashboardSheet(wb, all, agg) {
+  const ws = wb.addWorksheet('Dashboard', { properties: { tabColor: { argb: XL.header } },
+    views: [{ showGridLines: false }], pageSetup: { ...PRINT } });
+  ws.columns = Array.from({ length: 17 }, (_, i) => ({ width: i === 0 ? 2 : 10 }));
+  const s = state.settings, c = agg.status;
+
+  ws.mergeCells('B1:Q1');
+  Object.assign(ws.getCell('B1'), { value: 'Compliance SLA Report', font: { bold: true, size: 20, color: { argb: XL.text } } });
+  ws.getRow(1).height = 32;
+  ws.mergeCells('B2:Q2');
+  Object.assign(ws.getCell('B2'), { value: `As of ${fmtDate(todayStr())}  ·  Source: ${state.fileName}  ·  ${c.total.toLocaleString()} findings across ${agg.assets} assets`,
+    font: { size: 10, color: { argb: XL.muted } } });
+  ws.mergeCells('B3:Q3');
+  Object.assign(ws.getCell('B3'), { value: `SLA policy: DMZ High/Critical ${s.sla.DMZ.HC}d, Medium/Low ${s.sla.DMZ.ML}d  ·  DRN High/Critical ${s.sla.DRN.HC}d, Medium/Low ${s.sla.DRN.ML}d  ·  "-" / Unknown Status in QIP use ${s.otherNetwork} rules  ·  ${agg.exceptions} finding(s) under exception`,
+    font: { size: 10, color: { argb: XL.muted } } });
+
+  const pct = (n, d) => d ? (n / d * 100).toFixed(1) + '%' : '0%';
+  const tiles = [
+    ['TOTAL FINDINGS', c.total, `${agg.assets} assets`, 'FF2457C5'],
+    ['COMPLIANT', c.ok, pct(c.ok, c.total) + ' of findings', 'FF1F7A4A'],
+    ['OPEN ISSUES', c.open, pct(c.open, c.total) + ' of findings', 'FF1B1F24'],
+    ['WITHIN SLA', c.within, 'open, on track', 'FF4B5563'],
+    ['DUE SOON', c.soon, `≤ ${s.dueSoon} days left`, 'FF9A6200'],
+    ['SLA BREACHED', c.bad, pct(c.bad, c.open) + ' of open issues', 'FFB42318'],
+    ['RISK ACCEPTED', c.accepted, 'no SLA deadline', 'FF5B45C4'],
+    ['STALE SCANS', agg.stale, `> ${s.staleDays} days old`, 'FF5D6673'],
+  ];
+  const white = { style: 'medium', color: { argb: 'FFFFFFFF' } };
+  tiles.forEach(([label, value, sub, color], i) => {
+    const c0 = 2 + i * 2;
+    [[5, label, { bold: true, size: 9, color: { argb: XL.muted } }],
+     [6, value, { bold: true, size: 22, color: { argb: color } }],
+     [7, sub, { size: 9, color: { argb: XL.muted } }]].forEach(([r, v, font]) => {
+      ws.mergeCells(r, c0, r, c0 + 1);
+      const cell = ws.getCell(r, c0);
+      cell.value = v; cell.font = font; cell.fill = fill(XL.band);
+      cell.alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+      cell.border = { left: white, right: white, top: r === 5 ? { style: 'thick', color: { argb: color } } : undefined };
+    });
+  });
+  ws.getRow(6).height = 34;
+
+  // Charts: place on a 20px row grid; avoid splitting a chart across printed pages
+  const ch = reportCharts(agg);
+  const ROW_PX = 20, PAGE_PX = 880;
+  let row = 9, pageUsed = 200;
+  const place = (img, col) => {
+    const id = wb.addImage({ base64: img.url.split(',')[1], extension: 'png' });
+    ws.addImage(id, { tl: { col, row: row - 1 }, ext: { width: img.w, height: img.h } });
+  };
+  const block = (imgs) => {
+    const h = Math.max(...imgs.map(i => i.h)), rows = Math.ceil(h / ROW_PX) + 1;
+    if (pageUsed + rows * ROW_PX > PAGE_PX && pageUsed > 0) { ws.getRow(row - 1).addPageBreak(); pageUsed = 0; }
+    imgs.forEach((img, i) => place(img, 1 + i * 8)); // second chart starts 8 columns (≈600px) to the right
+    row += rows; pageUsed += rows * ROW_PX;
+  };
+  block([ch.status, ch.netSev]);
+  if (ch.trend) block([ch.trend]);
+  block([ch.topIssues]);
+  block([ch.category]);
+  block([ch.aging, ch.topAssets]);
+  ws.pageSetup.printArea = `A1:Q${row}`;
+}
+
+function addSummarySheet(wb, all, agg) {
+  const ws = wb.addWorksheet('Summary', { views: [{ showGridLines: false }], pageSetup: { ...PRINT, orientation: 'portrait' } });
+  ws.columns = [{ width: 46 }, { width: 22 }, { width: 18 }, ...Array(8).fill({ width: 13 })];
+  const c = agg.status;
+  let r = 1;
+  Object.assign(ws.getCell(r, 1), { value: 'Compliance SLA Report — Summary Tables', font: { bold: true, size: 16 } });
+  Object.assign(ws.getCell(r + 1, 1), { value: `As of ${fmtDate(todayStr())} · Source: ${state.fileName}`, font: { size: 10, color: { argb: XL.muted } } });
+  r += 3;
+
+  r = addTable(ws, r, 'Status overview', ['Status', 'Findings', '% of total'],
+    BAR_KEYS.map(k => Object.assign([STATUS[k].label, c[k], c.total ? c[k] / c.total : 0], { statusKey: k })),
+    { pctCols: [2], statusCol: 0 });
+
+  r = addTable(ws, r, 'Total issues by test category',
+    ['Test Category', 'Total findings', 'Open issues', 'Within SLA', 'Due soon', 'SLA breached', 'Risk accepted', 'Compliant', 'No dates', 'Compliance %'],
+    agg.categories.map(g => [g.name, g.total, g.open, g.within, g.soon, g.bad, g.accepted, g.ok, g.unk, g.total ? g.ok / g.total : 0]),
+    { pctCols: [9] });
+
+  r = addTable(ws, r, 'Network × severity',
+    ['Network', 'Severity group', 'SLA rule', 'SLA days', 'Total findings', 'Open issues', 'SLA breached', 'Compliance %'],
+    agg.netSev.map(g => [g.network, GROUP_LABEL[g.grp], g.rule.label, g.rule.days, g.total, g.open, g.bad, g.total ? g.ok / g.total : 0]),
+    { pctCols: [7] });
+
+  r = addTable(ws, r, 'Top 10 issues',
+    ['Setting', 'Test Category', 'Highest severity', 'Open findings', 'Assets affected', 'SLA breached', 'Due soon', 'Risk accepted'],
+    agg.topIssues.map(g => [g.setting, g.category, g.severity, g.open, g.assets, g.bad, g.soon, g.accepted]),
+    { note: 'Settings with the most open (non-compliant) findings' });
+
+  r = addTable(ws, r, 'Top 10 assets',
+    ['Asset', 'Network', 'Open findings', 'High/Critical open', 'SLA breached', 'Due soon'],
+    agg.topAssets.map(g => [g.asset, g.network, g.open, g.hc, g.bad, g.soon]),
+    { note: 'Assets with the most open findings' });
+
+  r = addTable(ws, r, 'Top 10 most overdue findings',
+    ['Setting', 'Asset', 'Network', 'Severity', 'Test Category', 'SLA due date', 'Days overdue', '#'],
+    agg.overdue.map(x => [x.setting, x.asset, x.network, x.severity, x.category, xlDate(x.due), -x.remaining, numOrText(x.id)]));
+
+  r = addTable(ws, r, 'Aging of open issues', ['Days since last compliant', 'Open findings'],
+    agg.aging.map(a => [a.label, a.value]));
+  ws.pageSetup.printArea = `A1:J${r}`;
+}
+
+function addTrendSheet(wb) {
+  const ws = wb.addWorksheet('Trend', { views: [{ showGridLines: false }], pageSetup: { ...PRINT } });
+  ws.columns = [{ width: 13 }, { width: 34 }, ...Array(10).fill({ width: 12 })];
+  addTable(ws, 1, 'Snapshot history',
+    ['As of', 'Source file', 'Findings', 'Assets', 'Compliant', 'Compliance %', 'Open issues', 'Within SLA', 'Due soon', 'SLA breached', 'Risk accepted', 'New open', 'Resolved'],
+    state.snapshots.map(s => [xlDate(s.asOf), s.fileName, s.total, s.assets, s.ok, s.total ? s.ok / s.total : 0, s.open, s.within, s.soon, s.bad, s.accepted, s.newOpen, s.resolved]),
+    { pctCols: [5], note: 'One row per imported file, dated by its most recent scan. New/Resolved compare open findings with the previous snapshot.' });
+}
+
+function addExceptionsSheet(wb, all) {
+  const ws = wb.addWorksheet('Exceptions', { pageSetup: PRINT, views: [{ state: 'frozen', ySplit: 1 }] });
+  const cols = [['Asset', 22], ['Network', 18], ['Severity', 10], ['Test Category', 20], ['Setting', 44], ['Exception', 16],
+                ['Custom value', 14], ['Policy SLA (days)', 12], ['Reason', 44], ['Approved by', 18], ['Updated', 13], ['Current status', 15]];
+  ws.columns = cols.map(([header, width]) => ({ header, width }));
+  styleHeader(ws.getRow(1));
+  const byKey = new Map(all.map(r => [r.key, r]));
+  for (const [key, e] of Object.entries(state.exceptions)) {
+    const r = byKey.get(key);
+    const [asset, category, setting] = key.split('|');
+    const row = ws.addRow([r ? r.asset : asset, r?.network ?? '', r?.severity ?? '', r ? r.category : category, r ? r.setting : setting,
+      EXC_LABEL[e.type], e.type === 'days' ? `${e.days} days` : e.type === 'date' ? xlDate(e.date) : '—',
+      r?.policyDays ?? '', e.reason, e.by || '', xlDate(e.updated), r ? STATUS[r.status].label : 'Not in current sheet']);
+    row.getCell(7).numFmt = 'dd-mmm-yyyy'; row.getCell(11).numFmt = 'dd-mmm-yyyy';
+    [5, 9].forEach(i => row.getCell(i).alignment = { wrapText: true, vertical: 'top' });
+    if (r) styleStatus(row.getCell(12), r.status);
+  }
+  ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: cols.length } };
+}
+
+function addPolicySheet(wb) {
+  const ws = wb.addWorksheet('SLA Policy', { views: [{ showGridLines: false }] });
+  ws.columns = [{ width: 34 }, { width: 18 }, { width: 18 }];
+  const s = state.settings;
+  let r = addTable(ws, 1, 'SLA policy (days to remediate)', ['Network', 'High / Critical', 'Medium / Low'],
+    [['DMZ', s.sla.DMZ.HC, s.sla.DMZ.ML], ['DRN', s.sla.DRN.HC, s.sla.DRN.ML],
+     ['"-" / Unknown Status in QIP', `= ${s.otherNetwork}`, `= ${s.otherNetwork}`]]);
+  const notes = [
+    'A finding is Compliant when its Last Compliant Date is on or after its Last Scanned Date.',
+    'Otherwise the SLA clock starts at the Last Compliant Date, or the First Detected date when that is later.',
+    'Never-compliant findings start at the earliest of: First Detected, the date this tracker first saw them failing, or the Last Scanned Date.',
+    `"Due soon" = ${s.dueSoon} days or fewer remaining. Scans older than ${s.staleDays} days are flagged stale.`,
+    'Unrecognised severities are treated as High/Critical.',
+    'Exceptions (custom SLA days, custom due date, or risk accepted) override the policy for that finding.',
+  ];
+  notes.forEach((n, i) => Object.assign(ws.getCell(r + i, 1), { value: '• ' + n, font: { size: 10, color: { argb: XL.muted } } }));
+}
+
+async function buildReportWorkbook() {
+  const all = evaluated(), agg = aggregate(all);
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'Compliance SLA Tracker'; wb.created = new Date();
+  addDashboardSheet(wb, all, agg);
+  addSummarySheet(wb, all, agg);
+  if (state.snapshots.length) addTrendSheet(wb);
+  addFindingsSheet(wb, 'All Findings', all.slice().sort((a, b) => cmp(a, b, 'status') || cmp(a, b, 'id')));
+  addFindingsSheet(wb, 'SLA Breached', all.filter(r => r.status === 'bad').sort((a, b) => a.remaining - b.remaining), 'FFB42318');
+  addExceptionsSheet(wb, all);
+  addPolicySheet(wb);
+  return wb;
+}
+async function downloadWorkbook(wb, name) {
+  const buf = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+async function downloadReport() {
+  const btn = $('btnReport'); btn.disabled = true; btn.textContent = 'Building report…';
+  try { await downloadWorkbook(await buildReportWorkbook(), `compliance-sla-report-${todayStr()}.xlsx`); }
+  catch (e) { console.error(e); toast('Report failed: ' + e.message); }
+  finally { btn.disabled = false; btn.textContent = 'Download report (.xlsx)'; }
+}
+async function exportView() {
+  const wb = new ExcelJS.Workbook();
+  addFindingsSheet(wb, 'Filtered Findings', sortRows(filtered(evaluated())));
+  await downloadWorkbook(wb, `compliance-findings-${todayStr()}.xlsx`);
+}
+
+// ---------- UI wiring ----------
+function toast(msg) {
+  const t = $('toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), 5000);
+}
+function resetFilters(rerender = true) {
+  $('q').value = ''; $('fStale').checked = false; view.kpi = '';
+  ['fStatus', 'fSeverity', 'fNetwork', 'fCategory'].forEach(id => $(id).value = '');
+  view.page = 0;
+  if (rerender) render();
+}
+
+$('btnUpload').onclick = () => $('file').click();
+$('file').onchange = e => { const f = e.target.files[0]; if (f) importFile(f); e.target.value = ''; };
+$('btnReport').onclick = downloadReport;
+$('btnClear').onclick = () => {
+  if (!confirm('Remove the loaded sheet from this browser? (SLA settings and exceptions are kept.)')) return;
+  state.rows = []; state.fileName = ''; state.loadedAt = null; view.selected.clear(); save(); render();
+};
+
+const drop = $('drop');
+['dragenter', 'dragover'].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave', 'drop'].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); if (ev === 'drop' || e.target === document.documentElement) drop.classList.remove('over'); }));
+document.addEventListener('drop', e => { const f = e.dataTransfer?.files?.[0]; if (f) importFile(f); });
+
+['q', 'fSeverity', 'fNetwork', 'fCategory', 'fStale'].forEach(id =>
+  $(id).addEventListener('input', () => { view.page = 0; render(); }));
+$('fStatus').addEventListener('input', () => { view.page = 0; view.kpi = ''; render(); });
+$('btnReset').onclick = () => resetFilters();
+$('btnExport').onclick = exportView;
+$('prev').onclick = () => { view.page--; render(); };
+$('next').onclick = () => { view.page++; render(); };
+$('pageSize').onchange = e => { view.pageSize = +e.target.value; view.page = 0; render(); };
+$('btnBulkExc').onclick = () => openException([...view.selected]);
+$('btnClearSel').onclick = () => { view.selected.clear(); render(); };
+
+$('thead').addEventListener('click', e => {
+  if (e.target.id === 'selAll') {
+    view.lastFiltered.forEach(r => e.target.checked ? view.selected.add(r.uid) : view.selected.delete(r.uid));
+    return render();
+  }
+  const th = e.target.closest('th[data-sort]'); if (!th) return;
+  const k = th.dataset.sort;
+  view.sort = { key: k, dir: view.sort.key === k ? -view.sort.dir : 1 };
+  render();
+});
+$('tbody').addEventListener('click', e => {
+  const edit = e.target.closest('[data-edit]');
+  if (edit) return openException([+edit.dataset.edit]);
+  const cb = e.target.closest('input[data-uid]');
+  if (cb) { const u = +cb.dataset.uid; cb.checked ? view.selected.add(u) : view.selected.delete(u); render(); }
+});
+$('kpis').addEventListener('click', e => {
+  const tile = e.target.closest('.kpi'); if (!tile) return;
+  const k = tile.dataset.kpi;
+  const toggledOff = view.kpi === k;
+  view.kpi = toggledOff ? '' : k;
+  $('fStale').checked = !toggledOff && k === 'stale';
+  $('fStatus').value = !toggledOff && k && k !== 'stale' ? k : '';
+  view.page = 0; render();
+});
+document.querySelector('.breakdowns').addEventListener('click', e => {
+  const row = e.target.closest('.brow'); if (!row) return;
+  if (row.dataset.search !== undefined) {
+    $('q').value = $('q').value === row.dataset.search ? '' : row.dataset.search;
+  } else {
+    const sel = $(row.dataset.filter);
+    sel.value = sel.value === row.dataset.value ? '' : row.dataset.value;
+  }
+  view.page = 0; render();
+  $('q').scrollIntoView({ behavior: 'smooth', block: 'start' });
+});
+
+$('excCancel').onclick = () => $('excDlg').close();
+$('excSave').onclick = saveException;
+$('excDays').addEventListener('focus', () => document.querySelector('input[name=excType][value=days]').checked = true);
+$('excDate').addEventListener('focus', () => document.querySelector('input[name=excType][value=date]').checked = true);
+
+function fillSettingsForm(s) {
+  for (const n of ['DMZ', 'DRN']) for (const g of ['HC', 'ML']) $(`sla_${n}_${g}`).value = s.sla[n][g];
+  $('otherNet').value = s.otherNetwork; $('dueSoon').value = s.dueSoon; $('staleDays').value = s.staleDays;
+  $('excCount').textContent = `Saved in this browser: ${Object.keys(state.exceptions).length} exception(s), ${Object.keys(state.firstSeen).length} first-seen date(s), ` +
+    `${state.snapshots.length} trend snapshot(s). Back up regularly — clearing browser data erases them. The uploaded sheet itself is not included.`;
+}
+$('btnSettings').onclick = () => { fillSettingsForm(state.settings); $('settings').showModal(); };
+$('setReset').onclick = () => fillSettingsForm(DEFAULT_SETTINGS);
+$('setCancel').onclick = () => $('settings').close();
+$('setSave').onclick = () => {
+  const n = id => Math.max(0, parseInt($(id).value, 10) || 0);
+  state.settings = {
+    sla: { DMZ: { HC: n('sla_DMZ_HC'), ML: n('sla_DMZ_ML') }, DRN: { HC: n('sla_DRN_HC'), ML: n('sla_DRN_ML') } },
+    otherNetwork: $('otherNet').value, dueSoon: n('dueSoon'), staleDays: n('staleDays'),
+  };
+  save(); $('settings').close(); render(); toast('SLA settings saved.');
+};
+$('excBackup').onclick = () => {
+  const { exceptions, firstSeen, snapshots, lastOpen, mapMemory, settings } = state;
+  const blob = new Blob([JSON.stringify({ app: 'compliance-sla-tracker', version: 2, savedAt: new Date().toISOString(),
+    exceptions, firstSeen, snapshots, lastOpen, mapMemory, settings }, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = `sla-tracker-backup-${todayStr()}.json`; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+$('excRestore').onclick = () => $('excFile').click();
+const isDate = v => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+$('excFile').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = '';
+  if (!f) return;
+  try {
+    const data = JSON.parse(await f.text());
+    // Merge rather than replace, so restoring an old backup never loses newer local data
+    const exc = Object.entries(data.exceptions || {}).filter(([, v]) => v && EXC_LABEL[v.type] && typeof v.reason === 'string');
+    exc.forEach(([k, v]) => state.exceptions[k] = v);
+    const fs = Object.entries(data.firstSeen || {}).filter(([, d]) => isDate(d));
+    fs.forEach(([k, d]) => { if (!state.firstSeen[k] || d < state.firstSeen[k]) state.firstSeen[k] = d; });
+    const have = new Set(state.snapshots.map(s => s.asOf));
+    const snaps = (data.snapshots || []).filter(s => s && isDate(s.asOf) && typeof s.total === 'number' && !have.has(s.asOf));
+    state.snapshots = state.snapshots.concat(snaps).sort((a, b) => a.asOf.localeCompare(b.asOf));
+    if (data.lastOpen && isDate(data.lastOpen.asOf) && Array.isArray(data.lastOpen.keys) && (!state.lastOpen || data.lastOpen.asOf > state.lastOpen.asOf))
+      state.lastOpen = data.lastOpen;
+    Object.entries(data.mapMemory || {}).forEach(([h, k]) => { if (FIELD_BY_KEY[k]) state.mapMemory[h] = k; });
+    if (data.settings) state.settings = mergeSettings(data.settings);
+    save(); fillSettingsForm(state.settings); render();
+    toast(`Restored ${exc.length} exception(s), ${fs.length} first-seen date(s), ${snaps.length} snapshot(s)${data.settings ? ' and SLA settings' : ''}.`);
+  } catch (err) { toast('Could not read backup file: ' + err.message); }
+};
+
+// Tabs, mapping dialog, trend history
+$('tabs').addEventListener('click', e => { const b = e.target.closest('button[data-tab]'); if (b) { view.tab = b.dataset.tab; render(); } });
+$('mapCancel').onclick = () => { $('mapDlg').close(); pending = null; };
+$('mapImport').onclick = confirmImport;
+$('mapCurrent').onchange = () => { if (pending) pending.currentTouched = true; };
+$('mapBody').addEventListener('change', e => {
+  const sel = e.target.closest('select[data-field]'); if (!sel) return;
+  if (sel.value === '') delete pending.map[sel.dataset.field]; else pending.map[sel.dataset.field] = +sel.value;
+  updateMapPreview();
+});
+$('mapSheet').onchange = e => {
+  pending.sheetIdx = +e.target.value;
+  pending.headerRow = detectHeaderRow(pending.sheets[pending.sheetIdx].aoa);
+  pending.map = autoMap(headersOf(), dataRowsOf()); renderMapping();
+};
+$('mapHeaderRow').onchange = e => {
+  const n = Math.max(1, Math.min(parseInt(e.target.value, 10) || 1, pending.sheets[pending.sheetIdx].aoa.length));
+  pending.headerRow = n - 1; pending.map = autoMap(headersOf(), dataRowsOf()); renderMapping();
+};
+$('trendBody').addEventListener('click', e => {
+  const b = e.target.closest('[data-del-snap]'); if (!b) return;
+  if (!confirm(`Delete the snapshot as of ${fmtDate(b.dataset.delSnap)}?`)) return;
+  state.snapshots = state.snapshots.filter(s => s.asOf !== b.dataset.delSnap);
+  if (state.lastOpen?.asOf === b.dataset.delSnap) state.lastOpen = null;
+  save(); render();
+});
+$('btnClearHist').onclick = () => {
+  if (!confirm('Delete all trend snapshots? (Current data, exceptions and first-seen dates are kept.)')) return;
+  state.snapshots = []; state.lastOpen = null; save(); render();
+};
+
+if (typeof XLSX === 'undefined' || typeof ExcelJS === 'undefined') {
+  toast('A library failed to load — make sure the lib/ folder is next to index.html.');
+}
+load().then(render);
+</script>
+</body>
+</html>

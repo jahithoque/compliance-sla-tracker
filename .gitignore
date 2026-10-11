@@ -1,0 +1,5 @@
+# Demo data and generator (not needed to run the app)
+*.xlsx
+*.csv
+make_sample.js
+.DS_Store
